@@ -1,0 +1,27 @@
+# 复制到 /etc/systemd/system/pmp-backend.service（或由 deploy/deploy-server.sh 自动生成）
+# 修改 User / 路径后：
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pmp-backend
+#   curl -sf http://127.0.0.1:8000/health
+
+[Unit]
+Description=PMP Agent / LingX backend (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/DeepAgent/backend
+Environment=PATH=/opt/DeepAgent/backend/.venv/bin:/usr/local/bin:/usr/bin
+Environment=PYTHONUNBUFFERED=1
+# SQLite 建议 workers=1；换 PostgreSQL 后可改为 2+
+ExecStart=/opt/DeepAgent/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

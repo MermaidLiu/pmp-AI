@@ -1,0 +1,5 @@
+# PostgreSQL 时使用（推荐 psycopg 3，多为预编译 wheel，避免本机编译失败）
+# 将 .env 中 database_url 设为：
+#   postgresql+psycopg://用户名:密码@主机:5432/数据库名
+
+psycopg[binary]>=3.1
