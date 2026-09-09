@@ -17,7 +17,7 @@ import {
   loadPlatformSession,
   setPathologyImagingResult,
 } from "./platformSession";
-import { normalizePciRegions, sumPciRegions } from "./pciRegions";
+import { normalizePciRegions, resolvePciFromResult, sumPciRegions } from "./pciRegions";
 
 const JOB_KEY = "pmp_pathology_job";
 
@@ -84,7 +84,7 @@ export function isPathologyJobRunning(): boolean {
 }
 
 function getPci(result: PathologyImagingGradeResult): PciScoreResult | undefined {
-  return result.pci ?? (result.raw?.pci as PciScoreResult | undefined);
+  return resolvePciFromResult(result);
 }
 
 export type PathologyAnalysisOutcome = {
@@ -187,6 +187,7 @@ export async function startPathologyAnalysis(opts?: {
       useCache: !opts?.force,
       forceRefresh: opts?.force,
       runPci: true,
+      saveAnnotationDataset: true,
     });
     const hydrated = (await hydratePathologyImagingResult(finalRes)) ?? finalRes;
 

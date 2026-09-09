@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 import zipfile
@@ -192,6 +193,205 @@ def collect_dicom_files(file_items: list[tuple[str, bytes]] | None) -> list[tupl
         seen.add(key)
         unique.append((name, content))
     return unique
+
+
+def _single_zip_upload(file_items: list[tuple[str, bytes]] | None) -> tuple[str, bytes] | None:
+    if not file_items or len(file_items) != 1:
+        return None
+    name, content = file_items[0]
+    if Path(name).suffix.lower() == ".zip" and content:
+        return Path(name).name or "study.zip", content
+    return None
+
+
+def pack_dicom_as_zip(dicom_files: list[tuple[str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=3) as zf:
+        used: set[str] = set()
+        for idx, (name, content) in enumerate(dicom_files):
+            arc = Path(name).name or f"slice_{idx + 1}.dcm"
+            if Path(arc).suffix.lower() not in DICOM_SUFFIXES:
+                arc = f"{arc}.dcm"
+            base, ext = Path(arc).stem, Path(arc).suffix
+            candidate = arc
+            n = 2
+            while candidate.lower() in used:
+                candidate = f"{base}_{n}{ext}"
+                n += 1
+            used.add(candidate.lower())
+            zf.writestr(candidate, content)
+    return buf.getvalue()
+
+
+def _is_valid_dicom_bytes(content: bytes) -> bool:
+    return len(content) > 132 and content[128:132] == b"DICM"
+
+
+def build_ct_multipart_files(
+    dicom_files: list[tuple[str, bytes]],
+) -> tuple[list[tuple[str, tuple[str, bytes, str]]], dict[str, Any]]:
+    """Build multipart payload: one `files` part per .dcm (CT API rejects ZIP uploads)."""
+    with_dicm: list[tuple[str, bytes]] = []
+    without_dicm: list[tuple[str, bytes]] = []
+    for name, content in dicom_files:
+        if not content:
+            continue
+        if _is_valid_dicom_bytes(content):
+            with_dicm.append((name, content))
+        else:
+            without_dicm.append((name, content))
+    upload_files = with_dicm if with_dicm else without_dicm
+
+    multipart: list[tuple[str, tuple[str, bytes, str]]] = []
+    used: set[str] = set()
+    for idx, (name, content) in enumerate(upload_files):
+        fname = Path(name).name or f"slice_{idx + 1}.dcm"
+        if Path(fname).suffix.lower() not in DICOM_SUFFIXES:
+            fname = f"{fname}.dcm"
+        base, ext = Path(fname).stem, Path(fname).suffix
+        candidate = fname
+        n = 2
+        while candidate.lower() in used:
+            candidate = f"{base}_{n}{ext}"
+            n += 1
+        used.add(candidate.lower())
+        # Match curl `-F files=@*.dcm` (octet-stream); CT service rejects application/zip.
+        multipart.append(("files", (candidate, content, "application/octet-stream")))
+    meta = {
+        "upload_format": "multipart_dcm",
+        "multipart_count": len(multipart),
+        "dicom_with_dicm_header": len(with_dicm),
+        "dicom_without_dicm_header": len(without_dicm),
+    }
+    return multipart, meta
+
+
+def subsample_dicom_files(
+    files: list[tuple[str, bytes]],
+    max_count: int,
+) -> tuple[list[tuple[str, bytes]], bool]:
+    """Evenly sample DICOM slices to cap memory use on the CT analysis server."""
+    if max_count <= 0 or len(files) <= max_count:
+        return files, False
+    step = len(files) / max_count
+    indices = sorted({min(int(i * step), len(files) - 1) for i in range(max_count)})
+    return [files[i] for i in indices], True
+
+
+def _is_memory_error(detail: str) -> bool:
+    text = detail.lower()
+    return any(
+        token in text
+        for token in (
+            "cannot allocate memory",
+            "bad alloc",
+            "out of memory",
+            "alloc_cpu",
+            "defaultcpuallocator",
+            "error code 12",
+        )
+    )
+
+
+def _is_gateway_error(detail: str) -> bool:
+    text = detail.lower()
+    return any(token in text for token in ("http 502", "http 503", "http 504", "bad gateway", "service unavailable", "gateway timeout"))
+
+
+def _is_retryable_imaging_error(detail: str) -> bool:
+    text = detail.lower()
+    return _is_memory_error(detail) or _is_gateway_error(detail) or any(
+        token in text
+        for token in (
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection refused",
+            "connection error",
+            "remote end closed",
+            "http 500",
+            "http 429",
+        )
+    )
+
+
+def _is_dicom_rejected_error(detail: str) -> bool:
+    text = detail.lower()
+    return "no valid dicom" in text or ("http 400" in text and "dicom" in text)
+
+
+def _friendly_imaging_error(detail: str, *, dicom_count: int, dicom_sent: int | None = None) -> str:
+    sent_note = f"，本次发送 {dicom_sent} 层" if dicom_sent is not None and dicom_sent != dicom_count else ""
+    if _is_dicom_rejected_error(detail):
+        return (
+            f"CT 服务未识别到有效 DICOM（上传共 {dicom_count} 个{sent_note}）。"
+            "平台会解压 ZIP 后逐层上传 .dcm；请勿将整包 ZIP 直接发给 CT 接口。"
+            "若仍失败，请确认压缩包内为真实 DICOM（含 DICM 头或 .dcm 扩展名）。"
+            f" 技术详情：{detail[:280]}"
+        )
+    if _is_gateway_error(detail):
+        return (
+            f"影像诊断服务器网关异常（502/503/504，上传共 {dicom_count} 个 DICOM{sent_note}）。"
+            "常见原因：CT 分析进程崩溃、nginx 反代超时或服务重启。"
+            "建议等待 1–2 分钟后重试，或联系维护 CT 服务的同学。"
+            f" 技术详情：{detail[:200] or 'empty response'}"
+        )
+    if _is_memory_error(detail):
+        return (
+            f"影像诊断服务器内存不足（上传共 {dicom_count} 个 DICOM{sent_note}）。"
+            "建议：稍后重试；或上传更小序列/ZIP；或联系管理员为 CT 分析服务扩容/释放内存。"
+            f" 技术详情：{detail[:280]}"
+        )
+    return detail[:500] if detail.strip() else "远端 CT 服务未返回错误详情（可能为 nginx 502 空响应）"
+
+
+async def _post_pathology_imaging(
+    dicom_files: list[tuple[str, bytes]],
+    *,
+    run_pci: bool,
+    return_base64: bool = True,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
+    """POST multipart to CT module — files=@*.dcm (multiple) + runPci + returnBase64."""
+    url = (settings.pathology_imaging_api_url or DEFAULT_PATHOLOGY_IMAGING_API_URL).strip()
+    read_timeout = max(60.0, float(settings.pathology_imaging_api_timeout))
+    timeout = httpx.Timeout(connect=30.0, read=read_timeout, write=600.0, pool=30.0)
+    max_attempts = max(1, int(settings.pathology_imaging_retry_count or 3))
+
+    multipart_files, upload_meta = build_ct_multipart_files(dicom_files)
+    if not multipart_files:
+        return None, "HTTP 400：No valid DICOM files（本地未解析到有效 DICOM 字节）", upload_meta
+
+    form_data: dict[str, str] = {"runPci": "true" if run_pci else "false"}
+    if return_base64:
+        form_data["returnBase64"] = "true"
+
+    last_error = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, files=multipart_files, data=form_data)
+                resp.raise_for_status()
+                payload = normalize_ct_api_payload(resp.json())
+                if isinstance(payload, dict):
+                    payload["_upload_meta"] = upload_meta
+                return payload, None, upload_meta
+        except httpx.TimeoutException:
+            last_error = (
+                f"影像诊断分析接口超时（连接 30s / 读取 {int(read_timeout)}s）。"
+                f"CT 合并接口同学侧约 5 分钟，若本地总耗时更长，多为浏览器→本地上传 DICOM 耗时：{url}"
+            )
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code if e.response is not None else 0
+            body = (e.response.text or "").strip()[:500] if e.response is not None else str(e)
+            last_error = f"HTTP {code}：{body}"
+        except Exception as e:
+            last_error = str(e)
+
+        if attempt >= max_attempts or not _is_retryable_imaging_error(last_error):
+            break
+        await asyncio.sleep(min(8.0, 2.0 * attempt))
+
+    return None, last_error, upload_meta
 
 
 def _slim_raw_for_client(data: Any, *, max_str_len: int = 400) -> Any:
@@ -794,10 +994,12 @@ def enrich_with_merged_ct_pci(parsed: dict[str, Any], payload: dict[str, Any], *
 async def predict_grade_from_imaging(
     files: list[tuple[str, bytes]] | None = None,
     *,
-    return_base64: bool = True,
+    return_base64: bool | None = None,  # 控制 CT 接口是否回传标注 PNG（可视化必需）
     run_pci: bool = True,
 ) -> dict[str, Any]:
     """Upload DICOM files to external pathology grading service."""
+    if return_base64 is None:
+        return_base64 = settings.pathology_imaging_return_base64_default
     dicom_files = collect_dicom_files(files)
     if not dicom_files:
         return {
@@ -810,63 +1012,71 @@ async def predict_grade_from_imaging(
             "raw": {},
         }
 
-    url = (settings.pathology_imaging_api_url or DEFAULT_PATHOLOGY_IMAGING_API_URL).strip()
-    read_timeout = max(60.0, float(settings.pathology_imaging_api_timeout))
-    timeout = httpx.Timeout(connect=30.0, read=read_timeout, write=300.0, pool=30.0)
+    original_count = len(dicom_files)
+    max_dicom = int(settings.pathology_imaging_max_dicom_files or 0)
 
-    multipart_files: list[tuple[str, tuple[str, bytes, str]]] = []
-    for idx, (name, content) in enumerate(dicom_files):
-        fname = Path(name).name or f"slice_{idx + 1}.dcm"
-        if Path(fname).suffix.lower() not in DICOM_SUFFIXES:
-            fname = f"{fname}.dcm"
-        multipart_files.append(("files", (fname, content, "application/dicom")))
+    def _build_plans() -> list[tuple[list[tuple[str, bytes]], bool, str]]:
+        plans: list[tuple[list[tuple[str, bytes]], bool, str]] = []
+        primary, sampled = (
+            subsample_dicom_files(dicom_files, max_dicom)
+            if max_dicom > 0 and original_count > max_dicom
+            else (dicom_files, False)
+        )
+        preface = f"已从 {original_count} 层均匀抽样 {len(primary)} 层" if sampled else ""
 
-    form_data = {
-        "returnBase64": "true" if return_base64 else "false",
-        "runPci": "true" if run_pci else "false",
+        plans.append((primary, run_pci, preface or "逐层 DICOM 上传"))
+        if run_pci:
+            plans.append((primary, False, "已跳过 PCI 联合分析以降低内存"))
+        for cap in (120, 80, 48):
+            if original_count > cap:
+                reduced, _ = subsample_dicom_files(dicom_files, cap)
+                plans.append((reduced, False, f"已均匀抽样至 {len(reduced)} 层并重试"))
+
+        seen: set[tuple[int, bool]] = set()
+        unique_plans: list[tuple[list[tuple[str, bytes]], bool, str]] = []
+        for batch, pci, note in plans:
+            key = (len(batch), pci)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_plans.append((batch, pci, note))
+        return unique_plans
+
+    last_error = ""
+    last_sent = original_count
+    last_upload_meta: dict[str, Any] = {}
+    for batch, pci, note in _build_plans():
+        last_sent = len(batch)
+        payload, err, upload_meta = await _post_pathology_imaging(
+            batch, run_pci=pci, return_base64=return_base64
+        )
+        last_upload_meta = upload_meta
+        if payload is not None:
+            parsed = parse_grading_response(payload)
+            parsed = enrich_with_merged_ct_pci(parsed, payload, run_pci=pci)
+            parsed["dicom_count"] = original_count
+            parsed["dicom_sent"] = len(batch)
+            parsed["_api_payload"] = payload
+            if note:
+                base_msg = str(parsed.get("message") or "")
+                parsed["message"] = f"{note} · {base_msg}".strip(" ·") if base_msg else note
+            if parsed["status"] == "ok" and not parsed.get("message"):
+                parsed["message"] = f"已分析 {original_count} 个 DICOM 切片"
+            return parsed
+        last_error = err or "未知错误"
+        if _is_dicom_rejected_error(last_error):
+            break
+        if not _is_retryable_imaging_error(last_error):
+            break
+
+    friendly = _friendly_imaging_error(last_error, dicom_count=original_count, dicom_sent=last_sent)
+    return {
+        "status": "error",
+        "message": f"影像诊断分析接口调用失败：{friendly}",
+        "grade_label": "",
+        "confidence": None,
+        "result_image_base64": "",
+        "dicom_count": original_count,
+        "dicom_sent": last_sent,
+        "raw": {"last_error": last_error[:500], "upload_meta": last_upload_meta},
     }
-
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, files=multipart_files, data=form_data)
-            resp.raise_for_status()
-            payload = normalize_ct_api_payload(resp.json())
-    except httpx.TimeoutException:
-        return {
-            "status": "error",
-            "message": f"影像诊断分析接口超时（连接 30s / 读取 {int(read_timeout)}s）。CT 合并接口同学侧约 5 分钟，若本地总耗时更长，多为浏览器→本地上传 DICOM 耗时：{url}",
-            "grade_label": "",
-            "confidence": None,
-            "result_image_base64": "",
-            "dicom_count": len(dicom_files),
-            "raw": {},
-        }
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text[:500] if e.response is not None else str(e)
-        return {
-            "status": "error",
-            "message": f"影像诊断分析接口 HTTP {e.response.status_code}：{detail}",
-            "grade_label": "",
-            "confidence": None,
-            "result_image_base64": "",
-            "dicom_count": len(dicom_files),
-            "raw": {},
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"影像诊断分析接口调用失败：{e}",
-            "grade_label": "",
-            "confidence": None,
-            "result_image_base64": "",
-            "dicom_count": len(dicom_files),
-            "raw": {},
-        }
-
-    parsed = parse_grading_response(payload)
-    parsed = enrich_with_merged_ct_pci(parsed, payload, run_pci=run_pci)
-    parsed["dicom_count"] = len(dicom_files)
-    parsed["_api_payload"] = payload
-    if parsed["status"] == "ok" and not parsed.get("message"):
-        parsed["message"] = f"已分析 {len(dicom_files)} 个 DICOM 切片"
-    return parsed

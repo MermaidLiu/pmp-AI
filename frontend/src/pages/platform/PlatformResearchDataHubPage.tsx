@@ -68,21 +68,21 @@ export default function PlatformResearchDataHubPage() {
         {MODULES.map((m) => (
           <div key={m.key} className={`pmp-module-card pmp-module-card--${m.theme}`}>
             <div className="pmp-module-card-icon">{m.icon}</div>
-            <Title level={5} style={{ margin: "12px 0 8px", color: "#fff" }}>
+            <Title level={5} style={{ margin: "12px 0 8px" }}>
               {m.title}
             </Title>
-            <Paragraph style={{ color: "rgba(255,255,255,0.85)", fontSize: 13, minHeight: 48 }}>
+            <Paragraph type="secondary" style={{ fontSize: 13, minHeight: 48 }}>
               {m.desc}
             </Paragraph>
             <Space wrap size={[4, 4]} style={{ marginBottom: 16 }}>
               {m.tags.map((t) => (
-                <Tag key={t} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff" }}>
+                <Tag key={t} color="blue">
                   {t}
                 </Tag>
               ))}
             </Space>
             <Link to={m.path}>
-              <Button type="default" ghost block>
+              <Button type="primary" block>
                 进入模块
                 {m.key === "clinical" && clinicalN > 0 ? `（${clinicalN} 例）` : ""}
                 {m.key === "imaging" && imagingN > 0 ? `（${imagingN} 例）` : ""}

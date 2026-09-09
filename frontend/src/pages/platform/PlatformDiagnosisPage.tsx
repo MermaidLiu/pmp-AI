@@ -45,12 +45,12 @@ import {
   saveCarePathwayResult,
 } from "../../lib/platformSession";
 import { hasAnnotatedImage } from "../../lib/pathologyImage";
-import { buildPciConclusion, normalizePciRegions, pciRegionScoreTone, sumPciRegions } from "../../lib/pciRegions";
+import { buildPciConclusion, normalizePciRegions, pciHasRenderableScores, pciRegionScoreTone, resolvePciFromResult, sumPciRegions } from "../../lib/pciRegions";
 
 const { Title, Paragraph, Text } = Typography;
 
 function getPci(result: PathologyImagingGradeResult): PciScoreResult | undefined {
-  return result.pci ?? (result.raw?.pci as PciScoreResult | undefined);
+  return resolvePciFromResult(result);
 }
 
 function splitMessageParts(message: string): string[] {
@@ -227,12 +227,13 @@ function PciSliceScoresTable({ slices }: { slices: NonNullable<PciScoreResult["s
 
 function PciScorePanel({ pci, compact = false }: { pci: PciScoreResult; compact?: boolean }) {
   const fromCtSlices = pci.raw?.source === "ct_slices" || (pci.slice_scores?.length ?? 0) > 0;
+  const hasScores = pciHasRenderableScores(pci);
   if (pci.status === "skipped") {
     return (
       <Alert type="warning" showIcon message="PCI 评分未执行" description={pci.message} />
     );
   }
-  if (pci.status === "pending") {
+  if (pci.status === "pending" && !hasScores) {
     return (
       <Alert
         type="warning"
@@ -242,7 +243,7 @@ function PciScorePanel({ pci, compact = false }: { pci: PciScoreResult; compact?
       />
     );
   }
-  if (pci.status === "error" && !fromCtSlices) {
+  if (pci.status === "error" && !fromCtSlices && !hasScores) {
     return (
       <Alert type="error" showIcon message="PCI 评分失败" description={pci.message} />
     );
@@ -255,6 +256,15 @@ function PciScorePanel({ pci, compact = false }: { pci: PciScoreResult; compact?
 
   const summary = (
     <>
+      {pci.status === "pending" && hasScores ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="PCI 评分解析自 CT 响应（合并接口未返回完整 pci 对象）"
+          description={pci.message}
+        />
+      ) : null}
       {pci.status === "error" && fromCtSlices ? (
         <Alert
           type="info"

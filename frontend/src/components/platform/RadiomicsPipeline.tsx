@@ -2,7 +2,7 @@ import { App, Button, Space, Spin, Steps, Tag, Typography, Upload } from "antd";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useEffect, useMemo, useState } from "react";
 import type { ResearchResultRow } from "../../data/researchWorkbenchMock";
-import { platformPathologyGrade, platformRadiomicsRun } from "../../api/platform";
+import { platformPathologyGrade, platformRadiomicsExtract, platformRadiomicsRun } from "../../api/platform";
 import { hasAnnotatedImage, imageSrcFromBase64 } from "../../lib/pathologyImage";
 import { cacheNiiVolume, parseNiiVolume, resolveNiiRole } from "../../lib/niiVolumeStore";
 import {
@@ -21,6 +21,8 @@ type Props = {
   light: string;
   /** 工作台智能分析标注图（批量 ROI 模式下应不传） */
   annotatedImageBase64?: string | null;
+  /** 智能分析保存的标注数据集 ID（PyRadiomics 用 mask + DICOM） */
+  annotationDatasetId?: string;
   batchImages?: BatchImageItem[];
   /** 批量导入预勾画 ROI（跳过接口分割，直接提取特征） */
   batchRoiMode?: boolean;
@@ -34,6 +36,7 @@ export default function RadiomicsPipeline({
   accent,
   light,
   annotatedImageBase64,
+  annotationDatasetId = "",
   batchImages = [],
   batchRoiMode = false,
   pathologyGrade,
@@ -50,6 +53,8 @@ export default function RadiomicsPipeline({
   const [running, setRunning] = useState(false);
   const [segmenting, setSegmenting] = useState(false);
   const [featureCount, setFeatureCount] = useState<number | null>(null);
+  const [extractMessage, setExtractMessage] = useState("");
+  const [extracting, setExtracting] = useState(false);
   const [uploadedVolumeId, setUploadedVolumeId] = useState<string | null>(null);
   const [uploadedCtVolumeId, setUploadedCtVolumeId] = useState<string | null>(null);
   const [uploadingNii, setUploadingNii] = useState(false);
@@ -168,13 +173,39 @@ export default function RadiomicsPipeline({
       message.warning("请先运行 DICOM 分割获取 Mask");
       return;
     }
-    setFeatureCount(1248);
-    setStep(2);
-    const label =
-      sourceMode === "batch_roi"
-        ? `已从 ${batchRoiImages.length} 例批量预勾画 ROI 提取 1,248 维 Radiomics 特征`
-        : "已从标注病灶图 / ROI 提取 1,248 维 Radiomics 特征";
-    message.success(label);
+    if (sourceMode === "batch_roi" && !niiFiles.length) {
+      message.warning("批量 ROI 模式请在本页上传 CT + ROI 的 NIfTI 文件对以运行 PyRadiomics");
+      return;
+    }
+    if ((sourceMode === "api" || sourceMode === "dicom") && !annotationDatasetId) {
+      message.warning("缺少标注数据集：请重新运行智能分析（将自动保存 mask+DICOM 供 PyRadiomics）");
+      return;
+    }
+    setExtracting(true);
+    try {
+      const niiFilesToSend =
+        sourceMode === "manual_nii"
+          ? niiFiles.map((f) => (f.originFileObj ?? f) as unknown as File).filter(Boolean)
+          : [];
+      const res = await platformRadiomicsExtract({
+        annotationDatasetId:
+          sourceMode === "batch_roi" ? "" : annotationDatasetId || undefined,
+        files: niiFilesToSend.length ? niiFilesToSend : undefined,
+      });
+      if (!res.ok) {
+        message.error(res.message || "PyRadiomics 特征提取失败");
+        setExtractMessage(res.message || "");
+        return;
+      }
+      setFeatureCount(res.feature_count);
+      setExtractMessage(res.message);
+      setStep(2);
+      message.success(res.message || `已提取 ${res.feature_count} 维 PyRadiomics 特征`);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "特征提取失败");
+    } finally {
+      setExtracting(false);
+    }
   }
 
   async function runRadiomics() {
@@ -192,6 +223,7 @@ export default function RadiomicsPipeline({
         targetValue: clinicalQuestion.positiveClass,
         roiDefined: true,
         useAnnotatedImage: useAnnotated,
+        annotationDatasetId: annotationDatasetId || undefined,
         indicators: {
           ...(pathologyGrade ? { pathology_grade: pathologyGrade } : {}),
           ...clinicalQuestionToIndicators(clinicalQuestion),
@@ -373,9 +405,14 @@ export default function RadiomicsPipeline({
                 {roiDefined ? "ROI 已确认 ✓" : "确认 ROI"}
               </Button>
             ) : null}
-            <Button type="primary" disabled={!roiDefined} onClick={extractFeatures}>
-              提取特征
+            <Button type="primary" disabled={!roiDefined} loading={extracting} onClick={() => void extractFeatures()}>
+              提取 PyRadiomics 特征
             </Button>
+            {extractMessage ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {extractMessage}
+              </Text>
+            ) : null}
           </Space>
         </Space>
       ) : null}

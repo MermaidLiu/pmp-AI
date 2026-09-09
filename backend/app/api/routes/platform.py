@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
@@ -42,7 +43,9 @@ from app.models.platform_schemas import (
     PlatformPublicationTopicsResponse,
     PlatformResearchRunBody,
     PlatformResearchRunResponse,
+    RadiomicsExtractResponse,
     PlatformSaveResponse,
+    ResearchResultRowOut,
 )
 from app.repositories import pet_ct_case
 from app.services.billing_quota import consume_llm_quota, require_llm_quota
@@ -68,10 +71,9 @@ from app.services.platform_annotation_dataset import (
     save_annotation_dataset_from_api,
 )
 from app.services.pci_scoring_client import (
+    pci_result_has_scores,
     predict_pci_after_segmentation,
     predict_pci_score,
-    try_parse_embedded_pci,
-    try_parse_pci_from_ct_slices,
     try_parse_pci_from_manifest,
 )
 from app.services.pathology_slice_store import (
@@ -312,7 +314,7 @@ async def platform_research_run(
 async def platform_pathology_grade(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
-    return_base64: bool = Form(True),
+    return_base64: bool | None = Form(None),
     save_to_db: bool = Form(False),
     save_annotation_dataset: bool = Form(False),
     run_pci: bool = Form(True),
@@ -350,9 +352,20 @@ async def platform_pathology_grade(
                         raw_enriched["slice_manifest"] = disk_manifest
                         raw_enriched["slice_count"] = len(disk_manifest)
                 cached["raw"] = raw_enriched
+            if not cached.get("result_image_base64"):
+                disk_manifest = load_slice_manifest(fingerprint)
+                if disk_manifest:
+                    first_idx = int(disk_manifest[0].get("index", 0))
+                    png = get_slice_image_bytes(fingerprint, first_idx)
+                    if png:
+                        cached["result_image_base64"] = base64.b64encode(png).decode("ascii")
             return PathologyImagingGradeResult.model_validate(cached)
 
-    raw = await predict_grade_from_imaging(file_items, return_base64=return_base64, run_pci=run_pci)
+    raw = await predict_grade_from_imaging(
+        file_items,
+        return_base64=return_base64 if return_base64 is not None else settings.pathology_imaging_return_base64_default,
+        run_pci=run_pci,
+    )
     t_ct = time.perf_counter()
     api_payload = raw.pop("_api_payload", None)
     if isinstance(api_payload, dict):
@@ -396,25 +409,24 @@ async def platform_pathology_grade(
 
     pci_result: dict[str, Any] | None = raw.pop("pci", None) if isinstance(raw.get("pci"), dict) else None
     segmentation_done = raw.get("status") == "ok" and isinstance(api_payload, dict)
-    # 合并接口 runPci=true：只解析响应内 pci，不再二次调用 genpci（避免额外 5+ 分钟）
-    if run_pci and segmentation_done and not pci_result and isinstance(api_payload, dict):
-        pci_result = try_parse_embedded_pci(api_payload)
-        if not pci_result or pci_result.get("pci_score") is None:
-            slice_pci = try_parse_pci_from_ct_slices(api_payload)
-            if slice_pci:
-                pci_result = slice_pci
-        if pci_result and pci_result.get("status") == "ok":
-            if pci_result.get("pci_score") is not None and not raw.get("grade_label"):
-                raw["grade_label"] = f"PCI {pci_result['pci_score']}/36"
-        elif not pci_result:
-            pci_result = {
-                "status": "pending",
-                "message": "CT 合并接口未返回 pci 对象，请确认 CT 服务 runPci=true 且响应含 pciScore",
-                "pci_score": None,
-                "regions": [],
-                "raw": {"pci_merged_api": True},
-            }
-            raw["message"] = f"{raw.get('message', '')} · {pci_result['message']}".strip(" ·")
+    if run_pci and segmentation_done and isinstance(api_payload, dict):
+        if not pci_result or not pci_result_has_scores(pci_result):
+            pci_result = await predict_pci_after_segmentation(
+                api_payload,
+                exam_id=exam_id,
+                dcm_path_override=dcm_path.strip(),
+                upload_names=upload_names,
+                segmentation_complete=True,
+                ct_run_pci=run_pci,
+            )
+        if pci_result.get("pci_score") is not None and not raw.get("grade_label"):
+            raw["grade_label"] = f"PCI {pci_result['pci_score']}/36"
+        elif pci_result.get("slice_scores") and not raw.get("grade_label"):
+            total = pci_result.get("pci_score")
+            if total is not None:
+                raw["grade_label"] = f"PCI {total}/36"
+        if pci_result.get("message") and not raw.get("message"):
+            raw["message"] = str(pci_result["message"])
     elif pci_result and isinstance(raw_payload, dict):
         if pci_result.get("pci_score") is not None and not raw.get("grade_label"):
             raw["grade_label"] = f"PCI {pci_result['pci_score']}/36"
@@ -440,6 +452,22 @@ async def platform_pathology_grade(
                 if manifest:
                     raw_payload["slice_manifest"] = manifest
                     raw_payload["slice_count"] = len(manifest)
+                    if pci_result and pci_result.get("slice_scores"):
+                        by_index = {
+                            int(s.get("index", -1)): s
+                            for s in pci_result["slice_scores"]
+                            if isinstance(s, dict)
+                        }
+                        for entry in manifest:
+                            idx = int(entry.get("index", -1))
+                            row = by_index.get(idx)
+                            if not row:
+                                continue
+                            if entry.get("sc") is None and row.get("sc") is not None:
+                                entry["sc"] = row.get("sc")
+                            if entry.get("region") is None and row.get("region") is not None:
+                                entry["region"] = row.get("region")
+                        raw_payload["slice_manifest"] = manifest
                     # Write PNGs before responding — frontend loads slices immediately after grade returns.
                     await asyncio.to_thread(save_slice_store, fingerprint, api_payload)
                     if not raw.get("result_image_base64"):
@@ -720,6 +748,50 @@ async def platform_research_grade_run(
     return await run_research_task(db, body, dicom_files=file_items or None)
 
 
+@router.post("/research/radiomics-extract", response_model=RadiomicsExtractResponse)
+async def platform_radiomics_extract(
+    files: list[UploadFile] = File(default=[]),
+    annotation_dataset_id: str = Form(""),
+) -> RadiomicsExtractResponse:
+    from app.services.platform_radiomics import extract_radiomics_features
+    from app.services.radiomics_extractor import pyradiomics_available, pyradiomics_unavailable_reason, top_feature_rows
+
+    file_items: list[tuple[str, bytes]] = []
+    for uf in files:
+        file_items.append((uf.filename or "volume.nii.gz", await uf.read()))
+
+    if not pyradiomics_available():
+        return RadiomicsExtractResponse(
+            ok=False,
+            message=f"PyRadiomics 不可用：{pyradiomics_unavailable_reason()}",
+            pyradiomics_available=False,
+        )
+
+    try:
+        features, meta = extract_radiomics_features(
+            annotation_dataset_id=annotation_dataset_id.strip(),
+            file_items=file_items or None,
+        )
+        preview = [
+            ResearchResultRowOut(factor=name, metric=f"{val:.4g}", pValue="—", note="PyRadiomics", weight=100 - i)
+            for i, (name, val) in enumerate(top_feature_rows(features, limit=8))
+        ]
+        return RadiomicsExtractResponse(
+            ok=True,
+            feature_count=len(features),
+            features_preview=preview,
+            meta=meta,
+            message=f"已提取 {len(features)} 维 PyRadiomics 特征",
+            pyradiomics_available=True,
+        )
+    except Exception as exc:
+        return RadiomicsExtractResponse(
+            ok=False,
+            message=str(exc),
+            pyradiomics_available=True,
+        )
+
+
 @router.post("/research/radiomics-run", response_model=PlatformResearchRunResponse)
 async def platform_radiomics_run(
     files: list[UploadFile] = File(default=[]),
@@ -727,27 +799,41 @@ async def platform_radiomics_run(
     target_value: str = Form("高级别"),
     roi_defined: bool = Form(True),
     use_annotated_image: bool = Form(False),
+    annotation_dataset_id: str = Form(""),
     indicators_json: str = Form("{}"),
 ) -> PlatformResearchRunResponse:
     from app.services.platform_radiomics import run_radiomics_analysis
     import json
 
-    names = [uf.filename or "image.nii.gz" for uf in files]
+    file_items: list[tuple[str, bytes]] = []
+    names: list[str] = []
     for uf in files:
-        await uf.read()
+        name = uf.filename or "image.nii.gz"
+        names.append(name)
+        file_items.append((name, await uf.read()))
     try:
         indicators = json.loads(indicators_json) if indicators_json else {}
     except json.JSONDecodeError:
         indicators = {}
     if use_annotated_image:
         indicators["annotated_image_roi"] = "true"
-    return run_radiomics_analysis(
-        filenames=names or (["annotated_lesion.png"] if use_annotated_image else []),
-        target_field=target_field,
-        target_value=target_value,
-        roi_defined=roi_defined or use_annotated_image,
-        indicators=indicators,
-    )
+    dataset_id = (annotation_dataset_id or str(indicators.get("annotation_dataset_id") or "")).strip()
+    if dataset_id:
+        indicators["annotation_dataset_id"] = dataset_id
+    try:
+        return run_radiomics_analysis(
+            filenames=names or (["annotated_lesion.png"] if use_annotated_image else []),
+            target_field=target_field,
+            target_value=target_value,
+            roi_defined=roi_defined or use_annotated_image or bool(dataset_id) or bool(file_items),
+            indicators=indicators,
+            annotation_dataset_id=dataset_id,
+            file_items=file_items or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/knowledge/search", response_model=PlatformKnowledgeSearchResponse)

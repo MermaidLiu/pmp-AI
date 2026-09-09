@@ -129,3 +129,69 @@ export function buildPciConclusion(pci: PciScoreResult): string {
   if (parts.length) return parts.join("");
   return pci.message || "";
 }
+
+type SliceManifestRow = {
+  index?: number;
+  filename?: string;
+  sc?: number | null;
+  region?: number | null;
+};
+
+export function pciHasRenderableScores(pci: PciScoreResult | undefined): boolean {
+  if (!pci) return false;
+  if (pci.pci_score != null) return true;
+  if (pci.slice_scores?.some((s) => s.sc != null)) return true;
+  if (normalizePciRegions(pci).some((r) => r.score != null)) return true;
+  return Boolean(pci.conclusion?.trim());
+}
+
+/** Prefer top-level pci; fall back to raw.pci or slice_manifest sc rows. */
+export function resolvePciFromResult(result: {
+  pci?: PciScoreResult | null;
+  raw?: Record<string, unknown>;
+}): PciScoreResult | undefined {
+  const base = result.pci ?? (result.raw?.pci as PciScoreResult | undefined);
+  if (base && pciHasRenderableScores(base)) return base;
+
+  const raw = result.raw;
+  const manifest = Array.isArray(raw?.slice_manifest) ? (raw.slice_manifest as SliceManifestRow[]) : [];
+  const sliceScores = manifest
+    .filter((row) => row.sc != null)
+    .map((row) => ({
+      index: Number(row.index ?? 0),
+      filename: String(row.filename ?? ""),
+      sc: row.sc ?? null,
+      region: row.region ?? null,
+    }));
+
+  if (sliceScores.length) {
+    const regionMax = new Map<number, number>();
+    for (const row of sliceScores) {
+      if (row.region == null || row.sc == null) continue;
+      regionMax.set(row.region, Math.max(regionMax.get(row.region) ?? 0, row.sc));
+    }
+    const regions = PCI_REGION_DEFS.map((def) => ({
+      index: def.index,
+      key: def.key,
+      label: def.label,
+      score: regionMax.get(def.index) ?? null,
+    }));
+    const pciTotal =
+      regionMax.size > 0
+        ? [...regionMax.values()].reduce((a, b) => a + b, 0)
+        : null;
+    return {
+      status: "ok",
+      message: `已从 slice_manifest 读取 ${sliceScores.length} 层 sc 评分`,
+      pci_score: pciTotal,
+      is_positive: null,
+      positive_rate: null,
+      mesenteric_contracture: null,
+      regions,
+      slice_scores: sliceScores,
+      raw: { source: "slice_manifest" },
+    };
+  }
+
+  return base ?? undefined;
+}

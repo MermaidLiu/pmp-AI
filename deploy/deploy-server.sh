@@ -69,6 +69,9 @@ fi
 source "$VENV_DIR/bin/activate"
 python3 -m pip install -q --upgrade pip --default-timeout=120 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"}
 python3 -m pip install -q --default-timeout=300 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r "$BACKEND_DIR/requirements.txt"
+if ! python3 -m pip install -q --default-timeout=300 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r "$BACKEND_DIR/requirements-optional.txt"; then
+  log "警告: 可选依赖（ToolUniverse/LangChain）安装失败，核心平台仍可部署"
+fi
 
 # —— .env ——
 if [[ ! -f "$BACKEND_DIR/.env" ]]; then

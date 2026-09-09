@@ -31,6 +31,7 @@ export default function PlatformImagingAnalysisPage() {
       batchRoiMode={batchHasPresegRoi}
       radiomicsAnnotatedImage={pathology?.result_image_base64}
       radiomicsPathologyGrade={pathologyGrade}
+      radiomicsAnnotationDatasetId={pathology?.annotation_dataset_id}
     />
   );
 }

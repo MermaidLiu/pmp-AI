@@ -106,6 +106,20 @@ class Settings(BaseModel):
     pathology_imaging_api_timeout: float = Field(
         default_factory=lambda: float(_e("PATHOLOGY_IMAGING_API_TIMEOUT", "720"))
     )
+    # 0 = 不限制；OOM 时会自动均匀抽样重试。可设为 120 主动降低远端 CT 服务内存压力
+    pathology_imaging_max_dicom_files: int = Field(
+        default_factory=lambda: int(_e("PATHOLOGY_IMAGING_MAX_DICOM_FILES", "0"))
+    )
+    pathology_imaging_return_base64_default: bool = Field(
+        default_factory=lambda: _e_bool("PATHOLOGY_IMAGING_RETURN_BASE64_DEFAULT", True)
+    )
+    pathology_imaging_retry_count: int = Field(
+        default_factory=lambda: int(_e("PATHOLOGY_IMAGING_RETRY_COUNT", "3"))
+    )
+    # 0 = 始终按 CT 接口要求逐层上传 .dcm（推荐）；>0 时才尝试 ZIP（多数 CT 服务不支持）
+    pathology_imaging_zip_threshold: int = Field(
+        default_factory=lambda: int(_e("PATHOLOGY_IMAGING_ZIP_THRESHOLD", "0"))
+    )
     pathology_grade_cache_enabled: bool = Field(
         default_factory=lambda: _e_bool("PATHOLOGY_GRADE_CACHE_ENABLED", True)
     )

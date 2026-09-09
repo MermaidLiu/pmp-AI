@@ -19,12 +19,6 @@ Pillow>=10.0
 scipy>=1.11
 statsmodels>=0.14
 lifelines>=0.27
-# AI4S tool orchestration. Kept optional at runtime: the platform remains usable
-# in an air-gapped clinical deployment when this package is not installed.
-tooluniverse>=1.0
-
-langchain>=0.2.14
-langchain-classic>=0.1
-langchain-core>=0.2.0
-langchain-openai>=0.1.8
-langchain-community>=0.2.0
+# SimpleITK 用于 NIfTI 体积读取（PyRadiomics 见 requirements-optional.txt）
+SimpleITK>=2.3.0
+# ToolUniverse / LangChain 等可选依赖见 requirements-optional.txt

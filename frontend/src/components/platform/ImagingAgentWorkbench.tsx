@@ -33,6 +33,7 @@ type Props = {
   batchRoiMode?: boolean;
   radiomicsAnnotatedImage?: string | null;
   radiomicsPathologyGrade?: string;
+  radiomicsAnnotationDatasetId?: string;
 };
 
 type StrategyId = "radiomics" | "deeplearn" | "combined";
@@ -164,6 +165,7 @@ export default function ImagingAgentWorkbench({
   batchRoiMode = false,
   radiomicsAnnotatedImage,
   radiomicsPathologyGrade,
+  radiomicsAnnotationDatasetId,
 }: Props) {
   const { message } = App.useApp();
   const [agentStep, setAgentStep] = useState("input");
@@ -597,6 +599,7 @@ export default function ImagingAgentWorkbench({
               accent={ACCENT}
               light={LIGHT}
               annotatedImageBase64={batchRoiMode ? null : radiomicsAnnotatedImage}
+              annotationDatasetId={batchRoiMode ? "" : radiomicsAnnotationDatasetId}
               batchImages={batchRadiomicsImages}
               batchRoiMode={batchRoiMode}
               pathologyGrade={radiomicsPathologyGrade}

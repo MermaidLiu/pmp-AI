@@ -195,10 +195,10 @@ export default function PlatformKnowledgeLibraryPage() {
           <RobotOutlined />
         </div>
         <div className="pmp-kb-hero-text">
-          <Title level={3} style={{ margin: 0, color: "#fff" }}>
+          <Title level={3} style={{ margin: 0 }}>
             科研知识库智能体
           </Title>
-          <Paragraph style={{ margin: "6px 0 10px", color: "rgba(255,255,255,0.88)", fontSize: 14 }}>
+          <Paragraph type="secondary" style={{ margin: "6px 0 10px", fontSize: 14 }}>
             科研问答 · 文献检索 · 一键生成综述 / 论文 / 基金 / PPT
           </Paragraph>
           <Space wrap size={[6, 6]}>
@@ -209,7 +209,7 @@ export default function PlatformKnowledgeLibraryPage() {
               演示数据已隔离
             </Tag>
             {KNOWLEDGE_SOURCES.map((s) => (
-              <Tag key={s} style={{ margin: 0, background: "rgba(255,255,255,0.15)", border: "none", color: "#fff" }}>
+              <Tag key={s} style={{ margin: 0 }}>
                 {s}
               </Tag>
             ))}

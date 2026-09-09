@@ -149,10 +149,20 @@ def save_annotation_dataset_from_api(
         mask, lesion_pixels = extract_binary_mask(annotated_bytes, preview_bytes)
         Image.fromarray(mask, mode="L").save(mask_path, format="PNG")
 
+        preview_rel = ""
+        if preview_bytes:
+            preview_path = slices_dir / f"{stem}_preview.png"
+            preview_path.write_bytes(preview_bytes)
+            preview_rel = str(preview_path.relative_to(root))
+
         dicom_bytes = dicom_index.get(Path(filename).name.lower())
         dicom_meta = _dicom_meta_from_bytes(dicom_bytes) if dicom_bytes else {"matched": False, "filename": filename}
+        source_dcm_rel = ""
         if dicom_bytes:
             dicom_meta["matched"] = True
+            source_dcm_path = slices_dir / f"{stem}_source.dcm"
+            source_dcm_path.write_bytes(dicom_bytes)
+            source_dcm_rel = str(source_dcm_path.relative_to(root))
 
         sc_raw = _pick_item_scalar(item, _SLICE_SC_KEYS)
         region_raw = _pick_item_scalar(item, _SLICE_REGION_KEYS)
@@ -172,6 +182,8 @@ def save_annotation_dataset_from_api(
                 "filename": filename,
                 "annotated_png": str(annotated_path.relative_to(root)),
                 "mask_png": str(mask_path.relative_to(root)),
+                "preview_png": preview_rel,
+                "source_dcm": source_dcm_rel,
                 "dicom_meta_json": str(meta_path.relative_to(root)),
                 "mask_pixel_count": lesion_pixels,
                 "has_overlay": has_overlay,

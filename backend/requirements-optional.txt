@@ -1,0 +1,15 @@
+# Optional AI4S / LangChain extras.
+# These may fail on some macOS/Python builds (e.g. pypdfium2 source build).
+# Core platform startup does not require them; install with:
+#   pip install -r requirements-optional.txt
+
+tooluniverse>=1.0
+langchain>=0.2.14
+langchain-classic>=0.1
+langchain-core>=0.2.0
+langchain-openai>=0.1.8
+langchain-community>=0.2.0
+
+# PyRadiomics（macOS/Python 3.12 若 pip 编译失败，可先装 numpy Cython setuptools 后重试；
+# 未安装时平台会使用内置 firstorder 简化特征）
+pyradiomics>=3.1.0

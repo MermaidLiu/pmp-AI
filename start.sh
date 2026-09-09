@@ -40,12 +40,31 @@ ensure_node() {
 }
 
 req_hash() {
+  local f="$1"
   if command -v md5 >/dev/null 2>&1; then
-    md5 -q "$BACKEND_DIR/requirements.txt"
+    md5 -q "$f"
   elif command -v md5sum >/dev/null 2>&1; then
-    md5sum "$BACKEND_DIR/requirements.txt" | awk '{print $1}'
+    md5sum "$f" | awk '{print $1}'
   else
-    wc -c < "$BACKEND_DIR/requirements.txt" | tr -d ' '
+    wc -c < "$f" | tr -d ' '
+  fi
+}
+
+requirements_fingerprint() {
+  printf '%s:%s' \
+    "$(req_hash "$BACKEND_DIR/requirements.txt")" \
+    "$(req_hash "$BACKEND_DIR/requirements-optional.txt")"
+}
+
+install_python_deps() {
+  log "安装/更新 Python 依赖（首次或 requirements 变更时较慢，请耐心等待）…"
+  python3 -m pip install -q --upgrade pip --default-timeout=120 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"}
+  python3 -m pip install -q --default-timeout=300 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r "$BACKEND_DIR/requirements.txt"
+  if python3 -m pip install -q --default-timeout=300 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r "$BACKEND_DIR/requirements-optional.txt"; then
+    log "可选依赖（ToolUniverse/LangChain）就绪 ✓"
+  else
+    log "警告: 可选依赖安装失败（如 pypdfium2 编译失败），核心平台仍可运行"
+    log "  可稍后手动安装: pip install -r backend/requirements-optional.txt"
   fi
 }
 
@@ -59,11 +78,9 @@ setup_backend() {
 
   local hash_file="$VENV_DIR/.requirements.hash"
   local current_hash
-  current_hash="$(req_hash)"
+  current_hash="$(requirements_fingerprint)"
   if [[ "${FORCE_PIP_INSTALL:-0}" == "1" ]] || [[ ! -f "$hash_file" ]] || [[ "$(cat "$hash_file")" != "$current_hash" ]]; then
-    log "安装/更新 Python 依赖（首次或 requirements 变更时较慢，请耐心等待）…"
-    python3 -m pip install -q --upgrade pip --default-timeout=120 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"}
-    python3 -m pip install -q --default-timeout=300 ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r "$BACKEND_DIR/requirements.txt"
+    install_python_deps
     echo "$current_hash" > "$hash_file"
     log "Python 依赖就绪 ✓"
   else
@@ -83,9 +100,36 @@ setup_frontend() {
   fi
 }
 
+backend_healthy() {
+  curl -sf "http://${BACKEND_HOST}:${BACKEND_PORT}/health" >/dev/null 2>&1
+}
+
+frontend_healthy() {
+  curl -sf "http://127.0.0.1:${FRONTEND_PORT}/" >/dev/null 2>&1
+}
+
+free_port() {
+  local port="$1"
+  local pids
+  pids="$(lsof -t -i ":$port" -sTCP:LISTEN 2>/dev/null || true)"
+  [[ -n "$pids" ]] || return 0
+  log "释放端口 ${port}（PID: ${pids//$'\n'/, }）…"
+  kill $pids 2>/dev/null || true
+  sleep 1
+}
+
 start_backend() {
   if port_busy "$BACKEND_PORT"; then
-    die "端口 $BACKEND_PORT 已被占用。可执行: kill \$(lsof -t -i :$BACKEND_PORT) 或设置 BACKEND_PORT=8001"
+    if backend_healthy; then
+      log "端口 $BACKEND_PORT 已有后端在运行，复用现有服务 ✓"
+      return
+    fi
+    if [[ "${AUTO_KILL_PORTS:-1}" == "1" ]]; then
+      free_port "$BACKEND_PORT"
+    fi
+    if port_busy "$BACKEND_PORT"; then
+      die "端口 $BACKEND_PORT 已被占用。可执行: kill \$(lsof -t -i :$BACKEND_PORT) 或设置 BACKEND_PORT=8001"
+    fi
   fi
   log "启动后端 http://${BACKEND_HOST}:${BACKEND_PORT}（首次冷启动约 1–3 分钟，请稍候）"
   (
@@ -114,7 +158,16 @@ start_backend() {
 
 start_frontend() {
   if port_busy "$FRONTEND_PORT"; then
-    die "端口 $FRONTEND_PORT 已被占用。可设置 FRONTEND_PORT=5174"
+    if frontend_healthy; then
+      log "端口 $FRONTEND_PORT 已有前端在运行，复用现有服务 ✓"
+      return
+    fi
+    if [[ "${AUTO_KILL_PORTS:-1}" == "1" ]]; then
+      free_port "$FRONTEND_PORT"
+    fi
+    if port_busy "$FRONTEND_PORT"; then
+      die "端口 $FRONTEND_PORT 已被占用。可设置 FRONTEND_PORT=5174"
+    fi
   fi
   log "启动前端 http://127.0.0.1:${FRONTEND_PORT}"
   (

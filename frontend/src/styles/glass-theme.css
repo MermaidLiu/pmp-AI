@@ -1,19 +1,19 @@
-/* 浅蓝色毛玻璃主题 */
+/* 旧版模块页 · 与平台统一的小清新白底蓝调主题 */
 
 :root {
-  --glass-bg: rgba(255, 255, 255, 0.38);
-  --glass-bg-hover: rgba(255, 255, 255, 0.52);
-  --glass-bg-strong: rgba(255, 255, 255, 0.55);
-  --glass-border: rgba(255, 255, 255, 0.72);
-  --glass-border-soft: rgba(180, 220, 245, 0.6);
-  --glass-shadow: 0 8px 32px rgba(45, 130, 180, 0.1);
-  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.85);
-  --blur-md: blur(18px);
-  --blur-lg: blur(24px);
-  --text-primary: #164a63;
-  --text-secondary: #3d6f8a;
-  --accent: #2a95c7;
-  --accent-deep: #1a7a9e;
+  --glass-bg: #ffffff;
+  --glass-bg-hover: #f8fafc;
+  --glass-bg-strong: #ffffff;
+  --glass-border: #e8ecf1;
+  --glass-border-soft: #eef2f6;
+  --glass-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  --glass-inset: none;
+  --blur-md: none;
+  --blur-lg: none;
+  --text-primary: #1a1a2e;
+  --text-secondary: #64748b;
+  --accent: #4285f4;
+  --accent-deep: #3367d6;
 }
 
 html,
@@ -27,65 +27,50 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC",
     "Microsoft YaHei", sans-serif;
   color: var(--text-primary);
-  background-color: #b8dff5;
-  background-image: radial-gradient(ellipse 100% 70% at 50% -15%, rgba(255, 255, 255, 0.55), transparent 55%),
-    radial-gradient(ellipse 60% 45% at 95% 30%, rgba(186, 230, 253, 0.65), transparent 50%),
-    radial-gradient(ellipse 50% 40% at 5% 80%, rgba(147, 212, 245, 0.45), transparent 50%),
-    linear-gradient(168deg, #a5daf5 0%, #c8e9fa 35%, #e2f4fc 65%, #9fd0ee 100%);
-  background-attachment: fixed;
+  background-color: #f8fafc;
 }
 
-/* 通用毛玻璃容器 */
 .glass-panel {
   background: var(--glass-bg-strong);
-  backdrop-filter: var(--blur-md);
-  -webkit-backdrop-filter: var(--blur-md);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  box-shadow: var(--glass-shadow), var(--glass-inset);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow);
 }
 
 .glass-panel--large-radius {
-  border-radius: 24px;
+  border-radius: 16px;
 }
 
 .glass-panel--home {
-  background: rgba(255, 255, 255, 0.32);
+  background: #ffffff;
 }
 
-/* 顶栏 */
 .glass-header {
-  background: rgba(255, 255, 255, 0.32);
-  backdrop-filter: var(--blur-lg);
-  -webkit-backdrop-filter: var(--blur-lg);
+  background: #ffffff;
   border-bottom: 1px solid var(--glass-border-soft);
-  box-shadow: 0 4px 24px rgba(60, 140, 190, 0.06);
+  box-shadow: var(--glass-shadow);
 }
 
-/* 工作台卡片 */
 .glass-card.ant-card {
-  background: var(--glass-bg) !important;
-  backdrop-filter: var(--blur-md);
-  -webkit-backdrop-filter: var(--blur-md);
+  background: #ffffff !important;
   border: 1px solid var(--glass-border) !important;
-  border-radius: 16px !important;
-  box-shadow: var(--glass-shadow), var(--glass-inset);
-  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  border-radius: 14px !important;
+  box-shadow: var(--glass-shadow);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .glass-card.ant-card:hover {
   background: var(--glass-bg-hover) !important;
-  box-shadow: 0 12px 40px rgba(45, 130, 180, 0.14), var(--glass-inset);
-  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(66, 133, 244, 0.1);
+  transform: translateY(-1px);
 }
 
 .glass-card .ant-card-body {
   background: transparent !important;
 }
 
-/* 链接 */
 .glass-link {
-  color: var(--accent-deep);
+  color: var(--accent);
   font-weight: 500;
   text-decoration: none;
   border-bottom: 1px solid transparent;
@@ -93,11 +78,10 @@ body {
 }
 
 .glass-link:hover {
-  color: var(--accent);
-  border-bottom-color: rgba(42, 149, 199, 0.45);
+  color: var(--accent-deep);
+  border-bottom-color: rgba(66, 133, 244, 0.35);
 }
 
-/* Ant Design 组件在毛玻璃上的微调 */
 .glass-panel .ant-typography {
   color: inherit;
 }
@@ -105,18 +89,17 @@ body {
 .glass-panel .ant-input,
 .glass-panel .ant-input-affix-wrapper,
 .glass-panel .ant-input-textarea {
-  background: rgba(255, 255, 255, 0.55) !important;
-  border-color: rgba(180, 220, 245, 0.85) !important;
+  background: #ffffff !important;
+  border-color: var(--glass-border) !important;
 }
 
 .glass-panel .ant-upload-drag {
-  background: rgba(255, 255, 255, 0.35) !important;
-  border-color: rgba(180, 220, 245, 0.9) !important;
-  backdrop-filter: blur(8px);
+  background: #f8fafc !important;
+  border-color: #dbeafe !important;
 }
 
 .glass-panel .ant-tabs-nav::before {
-  border-color: rgba(180, 220, 245, 0.5) !important;
+  border-color: var(--glass-border-soft) !important;
 }
 
 .glass-panel .ant-table {
@@ -127,22 +110,18 @@ body {
   color: var(--text-secondary);
 }
 
-/* 代码块 / JSON 预览 */
 .glass-codeblock {
-  background: rgba(255, 255, 255, 0.42) !important;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(180, 220, 245, 0.65) !important;
-  border-radius: 12px !important;
-  box-shadow: var(--glass-inset);
+  background: #f8fafc !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 10px !important;
 }
 
 .glass-page-title.ant-typography {
-  color: #0f3d52 !important;
+  color: var(--text-primary) !important;
   font-weight: 600 !important;
 }
 
 .glass-codeblock--warm {
-  background: rgba(255, 248, 220, 0.5) !important;
-  border-color: rgba(255, 220, 150, 0.45) !important;
+  background: #fffbeb !important;
+  border-color: #fde68a !important;
 }

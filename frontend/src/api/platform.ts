@@ -334,6 +334,35 @@ export async function platformRunResearch(body: {
   return data;
 }
 
+export type RadiomicsExtractResult = {
+  ok: boolean;
+  feature_count: number;
+  features_preview: ResearchResultRow[];
+  meta: Record<string, unknown>;
+  message: string;
+  pyradiomics_available: boolean;
+};
+
+export async function platformRadiomicsExtract(
+  opts: {
+    files?: File[];
+    annotationDatasetId?: string;
+  } = {},
+) {
+  const form = new FormData();
+  (opts.files ?? []).forEach((f) => form.append("files", f));
+  form.append("annotation_dataset_id", opts.annotationDatasetId ?? "");
+  const { data } = await api.post<RadiomicsExtractResult>(
+    "/api/v1/platform/research/radiomics-extract",
+    form,
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: PATHOLOGY_GRADE_TIMEOUT_MS,
+    },
+  );
+  return data;
+}
+
 export async function platformRadiomicsRun(
   files: File[],
   opts: {
@@ -341,6 +370,7 @@ export async function platformRadiomicsRun(
     targetValue: string;
     roiDefined: boolean;
     useAnnotatedImage?: boolean;
+    annotationDatasetId?: string;
     indicators?: Record<string, string>;
   },
 ) {
@@ -350,6 +380,7 @@ export async function platformRadiomicsRun(
   form.append("target_value", opts.targetValue);
   form.append("roi_defined", String(opts.roiDefined));
   form.append("use_annotated_image", String(Boolean(opts.useAnnotatedImage)));
+  form.append("annotation_dataset_id", opts.annotationDatasetId ?? "");
   form.append("indicators_json", JSON.stringify(opts.indicators ?? {}));
   const { data } = await api.post<{
     rows: ResearchResultRow[];
@@ -377,9 +408,9 @@ export async function platformPathologyGrade(
 ) {
   const form = new FormData();
   files.forEach((f) => form.append("files", f));
-  form.append("return_base64", String(opts?.returnBase64 ?? true));
   form.append("save_to_db", String(opts?.saveToDb ?? false));
   form.append("save_annotation_dataset", String(opts?.saveAnnotationDataset ?? false));
+  form.append("return_base64", String(opts?.returnBase64 ?? true));
   form.append("run_pci", String(opts?.runPci ?? true));
   form.append("use_cache", String(opts?.useCache ?? true));
   form.append("force_refresh", String(opts?.forceRefresh ?? false));

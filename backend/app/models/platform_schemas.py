@@ -363,6 +363,15 @@ class PlatformResearchRunResponse(BaseModel):
     pathology_imaging: PathologyImagingGradeResult | None = None
 
 
+class RadiomicsExtractResponse(BaseModel):
+    ok: bool
+    feature_count: int = 0
+    features_preview: list[ResearchResultRowOut] = Field(default_factory=list)
+    meta: dict[str, Any] = Field(default_factory=dict)
+    message: str = ""
+    pyradiomics_available: bool = False
+
+
 class CitationValidationOut(BaseModel):
     doi: str = ""
     pmid: str = ""

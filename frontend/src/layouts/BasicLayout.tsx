@@ -2,6 +2,7 @@ import { ArrowLeftOutlined } from "@ant-design/icons";
 import { Alert, Button, Layout } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import "../styles/glass-theme.css";
 
 const { Header, Content } = Layout;
 
@@ -42,14 +43,14 @@ export default function BasicLayout() {
         >
           <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
             {showBack ? (
-              <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => nav("/")} style={{ color: "#1a6a8a" }}>
+              <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => nav("/")} style={{ color: "#4285F4" }}>
                 返回工作台
               </Button>
             ) : null}
-            <span style={{ fontSize: 18, fontWeight: 600, color: "#0f3d52", letterSpacing: 0.5 }}>
+            <span style={{ fontSize: 18, fontWeight: 600, color: "#1a1a2e", letterSpacing: 0.5 }}>
               PMP Agent
             </span>
-            <span style={{ color: "rgba(22, 74, 99, 0.72)", fontSize: 13 }}>
+            <span style={{ color: "#64748b", fontSize: 13 }}>
               诊断智能体 · 病历 → 诊断 → 治疗 → 队列 → 知识积累
             </span>
           </div>

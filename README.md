@@ -125,6 +125,12 @@ npm run dev
 | `PMP_MODEL_*` | 自训练 PMP 垂类模型的 OpenAI 兼容地址、密钥与模型名；未配置时仍可使用本地指南草案 |
 | `TOOLUNIVERSE_ENABLED` | 是否启用 ToolUniverse AI4S 工具编排；只发送去标识化科研查询，不发送原始病历或 DICOM |
 
+可选依赖（ToolUniverse / LangChain）见 `backend/requirements-optional.txt`。若安装时报 `pypdfium2` 编译失败，核心平台仍可运行；需要科研智能体功能时再单独安装：
+
+```bash
+pip install -r backend/requirements-optional.txt
+```
+
 ## AI 辅助诊断与组学分析
 
 工作台保持原有链路：**临床记录 + 生化指标 + DICOM/ZIP 上传 → 原 CT 分割/标注 + PCI 评分接口**。影像结果完成后，在「AI 辅助诊断」生成包含差异诊断、版本化指南片段和 AI4S 科研上下文的草案；医生可填写最终诊断并以 1–5 分评价一致度。反馈以病例 JSON 审计事件保存，进入训练前仍须完成脱敏、伦理审批和数据质控。

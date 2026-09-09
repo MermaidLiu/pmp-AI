@@ -10,7 +10,11 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.services.pathology_imaging_client import normalize_ct_api_payload
+from app.services.pathology_imaging_client import (
+    DEFAULT_PATHOLOGY_IMAGING_API_URL,
+    get_ct_results,
+    normalize_ct_api_payload,
+)
 
 DEFAULT_PCI_API_URL = "http://42.81.102.195:8509/genpci"
 DEFAULT_DCM_UPLOAD_ROOT = "/mc/opt/PMPPredict/temp_data/dcm_uploads"
@@ -30,6 +34,8 @@ _DCM_PATH_KEYS = (
     "dicomDir",
     "dicomUrl",
     "dicom_url",
+    "storagePath",
+    "storage_path",
     "folder",
     "folder_path",
     "folderPath",
@@ -250,7 +256,19 @@ def extract_dcm_path_from_ct_payload(payload: dict[str, Any], *, exam_id: str = 
     return candidates[0] if candidates else ""
 
 
-_SLICE_SC_KEYS = ("sc", "slice_score", "sliceScore", "SC")
+_SLICE_SC_KEYS = (
+    "sc",
+    "slice_score",
+    "sliceScore",
+    "SC",
+    "score",
+    "Score",
+    "pci_sc",
+    "pciSc",
+    "region_score",
+    "regionScore",
+    "pmp_sc",
+)
 _SLICE_REGION_KEYS = (
     "e",
     "E",
@@ -463,9 +481,11 @@ def try_parse_pci_from_ct_slices(payload: dict[str, Any] | None) -> dict[str, An
     """Build PCI / slice scores from CT module results[].sc (per-slice score)."""
     if not isinstance(payload, dict):
         return None
-    results = payload.get("results")
+    normalized = normalize_ct_api_payload(payload)
+    results = get_ct_results(normalized)
     if not isinstance(results, list) or not results:
         return None
+    payload = normalized
 
     slice_scores: list[dict[str, Any]] = []
     region_max: dict[int, int] = {}
@@ -522,6 +542,12 @@ def try_parse_embedded_pci(payload: dict[str, Any] | None) -> dict[str, Any] | N
         return None
 
     pci_block = payload.get("pci")
+    if isinstance(pci_block, list):
+        region_scores = _parse_region_list_array(pci_block)
+        if region_scores:
+            built = _build_pci_from_regions(region_scores, payload=payload, source="ct_merged_pci_list")
+            built["raw"] = {**(built.get("raw") or {}), "ct_merged": True}
+            return built
     if isinstance(pci_block, dict):
         parsed = parse_pci_response(pci_block)
         if parsed.get("status") == "ok" and (
@@ -529,6 +555,7 @@ def try_parse_embedded_pci(payload: dict[str, Any] | None) -> dict[str, Any] | N
             or any(r.get("score") is not None for r in parsed.get("regions") or [])
             or parsed.get("is_positive") is not None
             or parsed.get("conclusion")
+            or parsed.get("slice_scores")
         ):
             parsed["source"] = "ct_merged_pci"
             parsed["raw"] = {**(parsed.get("raw") or {}), "ct_merged": True}
@@ -808,16 +835,23 @@ async def predict_pci_score(dcm_path: str) -> dict[str, Any]:
     return parsed
 
 
+def pci_result_has_scores(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("pci_score") is not None:
+        return True
+    if any(r.get("score") is not None for r in result.get("regions") or []):
+        return True
+    if result.get("is_positive") is not None:
+        return True
+    if str(result.get("conclusion") or "").strip():
+        return True
+    slice_scores = result.get("slice_scores") or []
+    return bool(slice_scores and any(s.get("sc") is not None for s in slice_scores if isinstance(s, dict)))
+
+
 def _pci_has_score_data(result: dict[str, Any]) -> bool:
-    return bool(
-        result.get("status") == "ok"
-        and (
-            result.get("pci_score") is not None
-            or any(r.get("score") is not None for r in result.get("regions") or [])
-            or result.get("is_positive") is not None
-            or (result.get("slice_scores") or [])
-        )
-    )
+    return pci_result_has_scores(result) and str(result.get("status") or "") in ("ok", "done", "success", "pending", "")
 
 
 def _is_retryable_pci_error(message: str) -> bool:
@@ -900,6 +934,102 @@ async def predict_pci_score_with_polling(
     }
 
 
+def _ct_analysis_api_url() -> str:
+    base = (settings.pathology_imaging_api_url or DEFAULT_PATHOLOGY_IMAGING_API_URL).strip().rstrip("/")
+    if base.endswith("/upload"):
+        return f"{base[:-len('/upload')]}/analysis"
+    if base.endswith("/dicom"):
+        return f"{base}/analysis"
+    return f"{base.rsplit('/', 1)[0]}/analysis" if "/" in base else f"{base}/analysis"
+
+
+def parse_pci_from_ct_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Run all CT/genpci PCI parsers on one JSON payload."""
+    if not isinstance(payload, dict):
+        return None
+    for parser in (try_parse_embedded_pci, try_parse_pci_from_region_list, try_parse_pci_from_ct_slices):
+        parsed = parser(payload)
+        if parsed and pci_result_has_scores(parsed):
+            return parsed
+    return None
+
+
+async def fetch_ct_module_analysis_pci(
+    ct_payload: dict[str, Any],
+    *,
+    exam_id: str = "",
+    dcm_path_override: str = "",
+    upload_names: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Call /ct-module/dicom/analysis when upload response lacks pci / sc fields."""
+    payload = normalize_ct_api_payload(ct_payload or {})
+    url = _ct_analysis_api_url()
+    read_timeout = max(120.0, float(settings.pathology_imaging_api_timeout))
+    timeout = httpx.Timeout(connect=30.0, read=read_timeout, write=120.0, pool=30.0)
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        p = path.strip().rstrip("/")
+        if not p or p in seen:
+            return
+        seen.add(p)
+        candidates.append(p)
+
+    for path in build_explicit_dcm_paths(payload, override=dcm_path_override.strip()):
+        add(path)
+    session = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+    if session:
+        add(session)
+    if settings.pci_path_guess:
+        for path in build_guessed_dcm_paths(payload, exam_id=exam_id, upload_names=upload_names):
+            add(path)
+
+    if not candidates:
+        return None
+
+    tried: list[str] = []
+    last_error = ""
+    for dicom_url in candidates[:8]:
+        tried.append(dicom_url)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(
+                    url,
+                    json={"dicomUrl": dicom_url, "runPci": True, "returnBase64": False},
+                )
+                if resp.status_code >= 400:
+                    last_error = f"HTTP {resp.status_code}：{(resp.text or '')[:240]}"
+                    continue
+                data = normalize_ct_api_payload(resp.json())
+                parsed = parse_pci_from_ct_payload(data)
+                if parsed:
+                    parsed["raw"] = {
+                        **(parsed.get("raw") or {}),
+                        "ct_analysis_api": True,
+                        "dicomUrl": dicom_url,
+                        "analysis_keys": sorted(str(k) for k in data.keys()),
+                    }
+                    parsed["source"] = parsed.get("source") or "ct_analysis_api"
+                    parsed["paths_tried"] = tried
+                    return parsed
+        except Exception as exc:
+            last_error = str(exc)
+
+    if tried:
+        return {
+            "status": "pending",
+            "message": f"CT analysis 接口未返回 PCI 评分（{last_error[:180] or '响应无 sc/pci 字段'}）",
+            "pci_score": None,
+            "regions": [],
+            "slice_scores": [],
+            "paths_tried": tried,
+            "raw": {"ct_analysis_api": True, "last_error": last_error[:300]},
+        }
+    return None
+
+
 async def predict_pci_after_segmentation(
     ct_payload: dict[str, Any] | None,
     *,
@@ -921,49 +1051,25 @@ async def predict_pci_after_segmentation(
             "paths_tried": [],
         }
 
-    # 1) Merged CT API: top-level pci { pciScore, pci0Central, ... }
-    embedded = try_parse_embedded_pci(payload)
-    if embedded and (
-        embedded.get("pci_score") is not None
-        or any(r.get("score") is not None for r in embedded.get("regions") or [])
-        or embedded.get("is_positive") is not None
-        or embedded.get("conclusion")
-    ):
-        embedded["source"] = embedded.get("source") or "ct_payload"
-        return embedded
-
-    # 2) 13 区 PCI：list[{e, sc}, ...]
-    region_list_pci = try_parse_pci_from_region_list(payload)
-    if region_list_pci:
-        return region_list_pci
-
-    # 3) Per-slice sc from CT results
-    ct_slices = try_parse_pci_from_ct_slices(payload)
-    if ct_slices and ct_slices.get("slice_scores"):
-        return ct_slices
+    # 1–3) pci object / list[{e,sc}] / ctResults[].sc
+    parsed = parse_pci_from_ct_payload(payload)
+    if parsed:
+        parsed["source"] = parsed.get("source") or "ct_payload"
+        return parsed
 
     session_hint = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
     pending_status = "pending" if segmentation_complete else "skipped"
     pending_prefix = "分割与勾画已完成。" if segmentation_complete else ""
 
-    if ct_run_pci:
-        return {
-            "status": pending_status,
-            "message": (
-                f"{pending_prefix}CT 合并接口已请求 runPci，但响应中未包含 pci 评分字段。"
-                "请确认 CT 服务已更新并在响应中返回 pci 对象（pciScore、pci0Central 等）。"
-            ),
-            "pci_score": None,
-            "regions": [],
-            "slice_scores": [],
-            "raw": {
-                "sessionId": session_hint,
-                "segmentation_complete": segmentation_complete,
-                "ct_run_pci": True,
-                "pci_keys_in_response": sorted(str(k) for k in payload.keys()),
-            },
-            "paths_tried": [],
-        }
+    # 4) Legacy CT /analysis by dicomUrl (same session, no base64)
+    analysis_pci = await fetch_ct_module_analysis_pci(
+        payload,
+        exam_id=exam_id,
+        dcm_path_override=dcm_path_override,
+        upload_names=upload_names,
+    )
+    if analysis_pci and pci_result_has_scores(analysis_pci):
+        return analysis_pci
 
     explicit_paths = build_explicit_dcm_paths(payload, override=dcm_path_override.strip())
     candidates = list(explicit_paths)
@@ -1032,11 +1138,13 @@ async def predict_pci_after_segmentation(
         return ct_slices
 
     tried_summary = _format_paths_tried(result.get("paths_tried") or [])
+    analysis_tried = (analysis_pci or {}).get("paths_tried") or []
     return {
         "status": pending_status if segmentation_complete else "error",
         "message": (
-            f"{pending_prefix}genpci 未找到有效 DICOM 目录或尚未落盘（{tried_summary}）。"
-            "请确认 ZIP 在服务端的路径规则，并在 .env 设置 PCI_DCM_PATH_TEMPLATE，或分析时传入 dcm_path。"
+            f"{pending_prefix}未从 CT 合并响应 / analysis / genpci 解析到 PCI 小分。"
+            f"（genpci: {tried_summary or '—'}；analysis: {_format_paths_tried(analysis_tried) or '—'}）"
+            " 请确认 runPci=true 且响应含 pci 对象、list[{e,sc}] 或 ctResults[].sc。"
             + (f" sessionId={session_hint}。" if session_hint else "")
         ),
         "pci_score": None,
@@ -1045,9 +1153,9 @@ async def predict_pci_after_segmentation(
         "raw": {
             "sessionId": session_hint,
             "genpci_error": result.get("message"),
-            "paths_tried": result.get("paths_tried", []),
-            "segmentation_complete": segmentation_complete,
-            "upload_names": upload_names or [],
+            "ct_run_pci": ct_run_pci,
+            "pci_keys_in_response": sorted(str(k) for k in payload.keys()),
+            "analysis_last_error": (analysis_pci or {}).get("raw", {}).get("last_error"),
         },
-        "paths_tried": result.get("paths_tried", []),
+        "paths_tried": list(dict.fromkeys((result.get("paths_tried") or []) + analysis_tried)),
     }

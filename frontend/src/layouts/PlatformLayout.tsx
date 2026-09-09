@@ -178,14 +178,14 @@ export default function PlatformLayout() {
         collapsible
         collapsed={collapsed}
         trigger={null}
-        theme="dark"
+        theme="light"
       >
         <div className="pmp-sidebar-logo">
           <div className="pmp-sidebar-logo-icon">P</div>
           {!collapsed ? <span>PMP 智能平台</span> : null}
         </div>
         <Menu
-          theme="dark"
+          theme="light"
           mode="inline"
           selectedKeys={[selectedKey(loc.pathname)]}
           defaultOpenKeys={openKeysFor(loc.pathname)}
@@ -193,21 +193,10 @@ export default function PlatformLayout() {
           onClick={({ key }) => {
             if (typeof key === "string" && key.startsWith("/")) nav(key);
           }}
-          style={{ border: "none", padding: "8px 0" }}
+          style={{ border: "none", padding: "8px 10px", background: "transparent" }}
         />
         <div style={{ position: "absolute", bottom: 16, left: 0, right: 0, textAlign: "center" }}>
-          <button
-            type="button"
-            onClick={() => setCollapsed(!collapsed)}
-            style={{
-              background: "rgba(255,255,255,0.08)",
-              border: "none",
-              color: "#fff",
-              borderRadius: 6,
-              padding: "6px 12px",
-              cursor: "pointer",
-            }}
-          >
+          <button type="button" className="pmp-sidebar-collapse-btn" onClick={() => setCollapsed(!collapsed)}>
             {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
           </button>
         </div>
