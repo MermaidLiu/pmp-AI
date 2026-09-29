@@ -143,6 +143,9 @@ export function AnnotationSliceViewer({ result, fallbackImageBase64 = "" }: Prop
           {current?.filename || `切片 ${current?.index ?? "—"}`}
           {current?.sc != null ? ` · sc ${current.sc}` : ""}
           {current?.region != null ? ` · 区域 ${current.region}` : ""}
+          {(current as { volume_ml?: number })?.volume_ml != null
+            ? ` · ROI ${(current as { volume_ml: number }).volume_ml.toFixed(2)} ml`
+            : ""}
         </Text>
         <div className="pmp-annotation-viewer-slider">
           <Text style={{ fontSize: 12, minWidth: 72 }}>

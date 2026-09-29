@@ -134,6 +134,77 @@ class PciScoreResult(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+class RoiVolumeSummary(BaseModel):
+    status: str = ""
+    message: str = ""
+    total_volume_mm3: float | None = None
+    total_volume_ml: float | None = None
+    total_lesion_voxels: int | None = None
+    slices_with_lesion: int = 0
+    spacing_note: str = ""
+    method: str = ""
+    slice_volumes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PciRegionAnatomyRow(BaseModel):
+    index: int = 0
+    key: str = ""
+    label: str = ""
+    structures: str = ""
+    boundaries: str = ""
+    pci_score: int | None = None
+    volume_mm3: float = 0
+    volume_ml: float = 0
+    slice_count: int = 0
+
+
+class PciRegionAnatomyReport(BaseModel):
+    status: str = ""
+    message: str = ""
+    total_pci_score: int | None = None
+    total_volume_ml: float | None = None
+    total_volume_mm3: float | None = None
+    regions: list[PciRegionAnatomyRow] = Field(default_factory=list)
+    unassigned_volume_ml: float = 0
+    anatomy_reference: str = ""
+
+
+class LesionRoiItem(BaseModel):
+    lesion_id: str = ""
+    slice_index: int = 0
+    filename: str = ""
+    region: int | None = None
+    mask_pixels: int = 0
+    volume_mm3: float = 0
+    volume_ml: float = 0
+    bbox_xyxy: list[int] = Field(default_factory=list)
+
+
+class LesionRoiPack(BaseModel):
+    status: str = ""
+    message: str = ""
+    lesion_count: int = 0
+    total_lesion_volume_ml: float | None = None
+    lesions: list[LesionRoiItem] = Field(default_factory=list)
+
+
+class ImagingGradePrediction(BaseModel):
+    grade_label: str = ""
+    confidence: float | None = None
+    source: str = ""
+    probabilities: dict[str, float] = Field(default_factory=dict)
+
+
+class ImagingCohortStatusResponse(BaseModel):
+    cohort_root: str = ""
+    high_grade_zips: int = 0
+    low_grade_zips: int = 0
+    features_extracted: int = 0
+    model_exists: bool = False
+    instructions: str = ""
+    last_training: dict[str, Any] = Field(default_factory=dict)
+
+
 class PathologyImagingGradeResult(BaseModel):
     status: str = ""
     message: str = ""
@@ -148,6 +219,10 @@ class PathologyImagingGradeResult(BaseModel):
     annotation_slice_count: int = 0
     annotation_slices_with_mask: int = 0
     pci: PciScoreResult | None = None
+    roi_volume: RoiVolumeSummary | None = None
+    pci_region_report: PciRegionAnatomyReport | None = None
+    lesion_rois: LesionRoiPack | None = None
+    imaging_grade: ImagingGradePrediction | None = None
 
 
 class AnnotationDatasetSummary(BaseModel):

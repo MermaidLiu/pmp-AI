@@ -54,6 +54,7 @@ export function slimPathologyImaging(
           fingerprint: raw.fingerprint,
           slice_manifest: raw.slice_manifest,
           slice_count: raw.slice_count,
+          roi_volume: raw.roi_volume,
         }
       : undefined;
   return {
@@ -69,6 +70,7 @@ export function slimPathologyImaging(
     annotation_slice_count: result.annotation_slice_count,
     annotation_slices_with_mask: result.annotation_slices_with_mask,
     pci: result.pci ?? null,
+    roi_volume: result.roi_volume ?? null,
     raw: slimRaw,
   };
 }

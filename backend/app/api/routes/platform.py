@@ -19,6 +19,11 @@ from app.models.platform_schemas import (
     CarePathwayAnalyzeBody,
     CarePathwayAnalyzeResponse,
     PathologyImagingGradeResult,
+    PciRegionAnatomyReport,
+    LesionRoiPack,
+    ImagingGradePrediction,
+    ImagingCohortStatusResponse,
+    RoiVolumeSummary,
     PathologySaveRequest,
     PlatformChatAnalyzeResponse,
     PlatformAssistedDiagnosisBody,
@@ -64,6 +69,19 @@ from app.services.platform_adapters import (
     record_to_patient_row,
 )
 from app.services.platform_imaging_persist import persist_pathology_imaging_result
+from app.services.roi_volume import compute_roi_volume_from_annotation_dataset, compute_roi_volume_from_ct_segmentation
+from app.services.pci_region_report import (
+    build_pci_region_anatomy_report,
+    extract_lesion_rois_from_ct,
+    imaging_feature_vector,
+)
+from app.services.imaging_cohort_trainer import (
+    batch_extract_cohort_features,
+    cohort_directory_status,
+    external_validation_report,
+    predict_imaging_grade,
+    train_imaging_grade_model,
+)
 from app.services.platform_annotation_dataset import (
     build_annotation_zip,
     list_annotation_datasets,
@@ -474,11 +492,73 @@ async def platform_pathology_grade(
                         preview_b64 = first_annotated_slice_base64(api_payload)
                         if preview_b64:
                             raw["result_image_base64"] = preview_b64
+                    try:
+                        roi_vol = await asyncio.to_thread(
+                            compute_roi_volume_from_ct_segmentation,
+                            api_payload,
+                            file_items,
+                        )
+                        raw_payload["roi_volume"] = roi_vol
+                        vol_by_idx = {
+                            int(s.get("index", -1)): s
+                            for s in roi_vol.get("slice_volumes") or []
+                            if isinstance(s, dict)
+                        }
+                        for entry in manifest:
+                            row = vol_by_idx.get(int(entry.get("index", -1)))
+                            if row:
+                                entry["volume_mm3"] = row.get("volume_mm3")
+                                entry["volume_ml"] = row.get("volume_ml")
+                        raw_payload["slice_manifest"] = manifest
+                        if roi_vol.get("total_volume_ml") is not None and roi_vol.get("slices_with_lesion", 0) > 0:
+                            vol_note = f"ROI 体积 {roi_vol['total_volume_ml']:.2f} ml（{roi_vol['slices_with_lesion']} 层）"
+                            raw["message"] = f"{raw.get('message', '')} · {vol_note}".strip(" ·")
+                    except Exception as exc:
+                        raw_payload["roi_volume"] = {
+                            "status": "error",
+                            "message": f"ROI 体积计算失败：{exc}",
+                        }
             elif not raw_payload.get("slice_manifest"):
                 disk_manifest = load_slice_manifest(fingerprint)
                 if disk_manifest:
                     raw_payload["slice_manifest"] = disk_manifest
                     raw_payload["slice_count"] = len(disk_manifest)
+
+    if (
+        isinstance(raw_payload, dict)
+        and raw.get("status") == "ok"
+        and isinstance(api_payload, dict)
+    ):
+        roi_vol_dict = raw_payload.get("roi_volume") if isinstance(raw_payload.get("roi_volume"), dict) else None
+        manifest_list = raw_payload.get("slice_manifest") if isinstance(raw_payload.get("slice_manifest"), list) else None
+        try:
+            region_report = await asyncio.to_thread(
+                build_pci_region_anatomy_report,
+                pci_result=pci_result,
+                roi_volume=roi_vol_dict,
+                slice_manifest=manifest_list,
+                api_payload=api_payload,
+            )
+            raw_payload["pci_region_report"] = region_report
+            slice_sc = (pci_result or {}).get("slice_scores") if isinstance(pci_result, dict) else None
+            lesion_pack = await asyncio.to_thread(
+                extract_lesion_rois_from_ct,
+                api_payload,
+                file_items,
+                slice_scores=slice_sc,
+            )
+            raw_payload["lesion_rois"] = lesion_pack
+            feats = imaging_feature_vector(region_report, lesion_pack, roi_vol_dict)
+            grade_pred = await asyncio.to_thread(predict_imaging_grade, feats)
+            if grade_pred:
+                raw_payload["imaging_grade"] = grade_pred
+                if not str(raw.get("grade_label") or "").strip() or str(raw.get("grade_label", "")).startswith("PCI"):
+                    raw["grade_label"] = grade_pred["grade_label"]
+                    raw["confidence"] = grade_pred.get("confidence")
+                note = f"影像分级 {grade_pred['grade_label']}（{grade_pred.get('confidence', 0) * 100:.0f}%）"
+                raw["message"] = f"{raw.get('message', '')} · {note}".strip(" ·")
+        except Exception as exc:
+            raw_payload["pci_region_report"] = {"status": "error", "message": str(exc), "regions": []}
 
     response = PathologyImagingGradeResult(
         status=str(raw.get("status", "")),
@@ -494,6 +574,26 @@ async def platform_pathology_grade(
         annotation_slice_count=annotation_slice_count,
         annotation_slices_with_mask=annotation_slices_with_mask,
         pci=PciScoreResult.model_validate(pci_result) if pci_result else None,
+        roi_volume=(
+            RoiVolumeSummary.model_validate(raw_payload["roi_volume"])
+            if isinstance(raw_payload, dict) and isinstance(raw_payload.get("roi_volume"), dict)
+            else None
+        ),
+        pci_region_report=(
+            PciRegionAnatomyReport.model_validate(raw_payload["pci_region_report"])
+            if isinstance(raw_payload, dict) and isinstance(raw_payload.get("pci_region_report"), dict)
+            else None
+        ),
+        lesion_rois=(
+            LesionRoiPack.model_validate(raw_payload["lesion_rois"])
+            if isinstance(raw_payload, dict) and isinstance(raw_payload.get("lesion_rois"), dict)
+            else None
+        ),
+        imaging_grade=(
+            ImagingGradePrediction.model_validate(raw_payload["imaging_grade"])
+            if isinstance(raw_payload, dict) and isinstance(raw_payload.get("imaging_grade"), dict)
+            else None
+        ),
     )
 
     if (
@@ -583,6 +683,67 @@ def platform_get_annotation_dataset(dataset_id: str) -> dict[str, Any]:
         return load_annotation_manifest(dataset_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/pathology/ml/status")
+def platform_ct_ml_status() -> dict[str, Any]:
+    """Local CT segmentation + rPCI/grade training readiness."""
+    from ml.train_ct_rpci_grade import status as grade_status
+    from ml.train_ct_segmentation import status as seg_status
+
+    from app.services.ct_local_segmentation import local_seg_model_status
+
+    return {
+        "segmentation": seg_status(),
+        "rpci_grade": grade_status(),
+        "local_inference": local_seg_model_status(),
+        "train_commands": {
+            "segmentation": "cd backend && pip install -r requirements-ml.txt && python3 -m ml.train_ct_segmentation",
+            "rpci_grade": "cd backend && python3 -m ml.train_ct_rpci_grade --mode all",
+        },
+    }
+
+
+@router.get("/pathology/cohort/status", response_model=ImagingCohortStatusResponse)
+def platform_imaging_cohort_status() -> ImagingCohortStatusResponse:
+    return ImagingCohortStatusResponse.model_validate(cohort_directory_status())
+
+
+@router.post("/pathology/cohort/extract-features")
+async def platform_imaging_cohort_extract(
+    limit: int = 0,
+    skip_existing: bool = True,
+) -> dict[str, Any]:
+    """Run CT pipeline on high/low ZIP cohort and append features.jsonl (long-running)."""
+    return await batch_extract_cohort_features(limit=limit, skip_existing=skip_existing)
+
+
+@router.post("/pathology/cohort/train-imaging")
+def platform_imaging_cohort_train(min_samples: int = 6) -> dict[str, Any]:
+    try:
+        return train_imaging_grade_model(min_samples=min_samples)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/pathology/cohort/validate")
+def platform_imaging_cohort_validate(test_fraction: float = 0.3) -> dict[str, Any]:
+    try:
+        return external_validation_report(test_fraction=test_fraction)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/pathology/roi-volume/{dataset_id}", response_model=RoiVolumeSummary)
+def platform_roi_volume_from_dataset(dataset_id: str) -> RoiVolumeSummary:
+    """Recompute lesion ROI volume from a saved annotation dataset."""
+    try:
+        data = compute_roi_volume_from_annotation_dataset(dataset_id)
+        return RoiVolumeSummary.model_validate(data)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/pathology/annotation-datasets/{dataset_id}/download")

@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.data.rpci_anatomy import list_rpci_region_defs, rpci_region_order_for_pci_client
 from app.services.pathology_imaging_client import (
     DEFAULT_PATHOLOGY_IMAGING_API_URL,
     get_ct_results,
@@ -107,21 +108,12 @@ _PCI_EMBEDDED_KEYS = (
     "pmp_sc",
 )
 
-_PCI_REGION_ORDER: list[tuple[str, str, tuple[str, ...]]] = [
-    ("pci0Central", "0_中央区域", ("pci0Central", "pci0")),
-    ("pci1RightUpper", "1_右上区域", ("pci1RightUpper", "pci1")),
-    ("pci2Epigastrium", "2_上腹部区域", ("pci2Epigastrium", "pci2")),
-    ("pci3LeftUpper", "3_左上区域", ("pci3LeftUpper", "pci3")),
-    ("pci4LeftFlank", "4_左侧腹部区域", ("pci4LeftFlank", "pci4RightLower", "pci4")),
-    ("pci5LeftLower", "5_左下区域", ("pci5LeftLower", "pci5RightFlank", "pci5")),
-    ("pci6Pelvis", "6_盆腔区域", ("pci6Pelvis", "pci6RightLowerAbdomen", "pci6")),
-    ("pci7RightLower", "7_右下区域", ("pci7RightLower", "pci7LowerAbdomen", "pci7")),
-    ("pci8RightFlank", "8_右侧腹部区域", ("pci8RightFlank", "pci8LeftLowerAbdomen", "pci8")),
-    ("pci9UpperJejunum", "9_空肠上部区域", ("pci9UpperJejunum", "pci9LeftFlank", "pci9")),
-    ("pci10LowerJejunum", "10_空肠下部区域", ("pci10LowerJejunum", "pci10LeftUpperAbdomen", "pci10")),
-    ("pci11UpperIleum", "11_回肠上部区域", ("pci11UpperIleum", "pci11Jejunum", "pci11")),
-    ("pci12LowerIleum", "12_回肠下部区域", ("pci12LowerIleum", "pci12")),
-]
+def list_pci_region_defs() -> list[dict[str, Any]]:
+    """Public 13-zone rPCI anatomy (Tops-Welten et al., Eur Radiol 2025)."""
+    return list_rpci_region_defs()
+
+
+_PCI_REGION_ORDER: list[tuple[str, str, tuple[str, ...]]] = rpci_region_order_for_pci_client()
 
 
 def _find_dcm_path_in_obj(obj: Any) -> str:

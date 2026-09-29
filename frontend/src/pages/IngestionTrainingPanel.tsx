@@ -9,6 +9,13 @@ import {
   type TrainingRunResult,
   type TrainingStatus,
 } from "../api/client";
+import {
+  platformImagingCohortExtract,
+  platformImagingCohortStatus,
+  platformImagingCohortTrain,
+  platformImagingCohortValidate,
+  type ImagingCohortStatus,
+} from "../api/platform";
 
 const { Paragraph, Text } = Typography;
 
@@ -20,6 +27,11 @@ export default function IngestionTrainingPanel() {
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [loadingExport, setLoadingExport] = useState(false);
   const [loadingTrain, setLoadingTrain] = useState(false);
+  const [cohortStatus, setCohortStatus] = useState<ImagingCohortStatus | null>(null);
+  const [loadingCohort, setLoadingCohort] = useState(false);
+  const [loadingExtract, setLoadingExtract] = useState(false);
+  const [loadingImagingTrain, setLoadingImagingTrain] = useState(false);
+  const [validateResult, setValidateResult] = useState<Record<string, unknown> | null>(null);
 
   const refreshStatus = useCallback(async () => {
     setLoadingStatus(true);
@@ -33,9 +45,21 @@ export default function IngestionTrainingPanel() {
     }
   }, [message]);
 
+  const refreshCohort = useCallback(async () => {
+    setLoadingCohort(true);
+    try {
+      setCohortStatus(await platformImagingCohortStatus());
+    } catch {
+      message.error("获取影像队列状态失败");
+    } finally {
+      setLoadingCohort(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     void refreshStatus();
-  }, [refreshStatus]);
+    void refreshCohort();
+  }, [refreshStatus, refreshCohort]);
 
   async function onExport() {
     setLoadingExport(true);
@@ -253,6 +277,122 @@ export default function IngestionTrainingPanel() {
           ))}
         </Card>
       ) : null}
+
+      <Card title="CT 自训练基模（分割 + rPCI/分级）" size="small" style={{ marginTop: 24, marginBottom: 16 }}>
+        <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          <Text strong>分割优先：</Text>分析时保存标注集 → 在 backend 执行{" "}
+          <Text code>python3 -m ml.train_ct_segmentation</Text>，权重{" "}
+          <Text code>models/ct_lesion_unet2d.pth</Text> 可继续 fine-tune。
+          <Text strong>分级</Text>按 rPCI 原则（13 区 max sc，0–39）与 cohort 高/低标签：{" "}
+          <Text code>python3 -m ml.train_ct_rpci_grade</Text>。详见 backend/ml/CT_TRAINING.md。
+        </Paragraph>
+        <Button
+          onClick={() => {
+            window.open("/api/v1/platform/pathology/ml/status", "_blank");
+          }}
+        >
+          查看 ML 数据/模型状态
+        </Button>
+      </Card>
+
+      <Card
+        title="影像 ZIP 队列训练（20 高 + 20 低）"
+        size="small"
+        style={{ marginTop: 24, marginBottom: 16 }}
+        extra={
+          <Button size="small" onClick={() => void refreshCohort()} loading={loadingCohort}>
+            刷新
+          </Button>
+        }
+      >
+        <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          将 ZIP 放入服务端目录 <Text code>data/imaging_cohort/high_grade</Text> 与{" "}
+          <Text code>low_grade</Text>，系统对每例跑 CT 分割 → 13 区 PCI+体积 → 病灶 ROI 特征，训练 XGBoost 病理分级。
+          训练完成后，任意患者上传 DICOM 可在「诊断结果」得到轮廓、体积、PCI 与 <Text code>imaging_grade</Text>。
+        </Paragraph>
+        <Descriptions bordered size="small" column={2} style={{ marginBottom: 12 }}>
+          <Descriptions.Item label="高级别 ZIP">{cohortStatus?.high_grade_zips ?? "—"}</Descriptions.Item>
+          <Descriptions.Item label="低级别 ZIP">{cohortStatus?.low_grade_zips ?? "—"}</Descriptions.Item>
+          <Descriptions.Item label="已提取特征">{cohortStatus?.features_extracted ?? "—"}</Descriptions.Item>
+          <Descriptions.Item label="影像模型">
+            {cohortStatus?.model_exists ? <Tag color="blue">已训练</Tag> : <Tag>未训练</Tag>}
+          </Descriptions.Item>
+        </Descriptions>
+        <Space wrap>
+          <Button
+            type="primary"
+            loading={loadingExtract}
+            onClick={async () => {
+              setLoadingExtract(true);
+              try {
+                const res = await platformImagingCohortExtract(0, true);
+                message.success(`特征提取完成：成功 ${String(res.success)} / 失败 ${String(res.failed)}`);
+                void refreshCohort();
+              } catch (e: unknown) {
+                const detail =
+                  e && typeof e === "object" && "response" in e
+                    ? (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
+                    : undefined;
+                message.error(detail || "特征提取失败（可能 CT 服务超时，可分批 limit 参数）");
+              } finally {
+                setLoadingExtract(false);
+              }
+            }}
+          >
+            提取队列特征（耗时）
+          </Button>
+          <Button
+            type="primary"
+            loading={loadingImagingTrain}
+            onClick={async () => {
+              setLoadingImagingTrain(true);
+              try {
+                const res = await platformImagingCohortTrain(6);
+                message.success(`影像模型准确率 ${((Number(res.accuracy) || 0) * 100).toFixed(1)}%`);
+                void refreshCohort();
+              } catch (e: unknown) {
+                const detail =
+                  e && typeof e === "object" && "response" in e
+                    ? (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
+                    : undefined;
+                message.error(detail || "训练失败，请先提取足够特征");
+              } finally {
+                setLoadingImagingTrain(false);
+              }
+            }}
+          >
+            训练影像分级模型
+          </Button>
+          <Button
+            onClick={async () => {
+              try {
+                setValidateResult(await platformImagingCohortValidate(0.3));
+                message.success("验证报告已生成");
+              } catch (e: unknown) {
+                const detail =
+                  e && typeof e === "object" && "response" in e
+                    ? (e as { response?: { data?: { detail?: string } } }).response?.data?.detail
+                    : undefined;
+                message.error(detail || "验证失败");
+              }
+            }}
+          >
+            外部验证（hold-out）
+          </Button>
+        </Space>
+        {validateResult ? (
+          <Paragraph style={{ marginTop: 12, marginBottom: 0 }}>
+            测试 n={String(validateResult.n_test)} · 准确率{" "}
+            {validateResult.accuracy != null ? `${(Number(validateResult.accuracy) * 100).toFixed(1)}%` : "—"}
+            {validateResult.auc != null ? ` · AUC ${Number(validateResult.auc).toFixed(3)}` : ""}
+            {validateResult.clinical_pass_hint === true ? (
+              <Tag color="green" style={{ marginLeft: 8 }}>
+                临床验证参考达标
+              </Tag>
+            ) : null}
+          </Paragraph>
+        ) : null}
+      </Card>
 
       <Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 0 }}>
         命令行等价操作（在 backend 目录）：

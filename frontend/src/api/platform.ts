@@ -186,6 +186,70 @@ export type PciScoreResult = {
   raw?: Record<string, unknown>;
 };
 
+export type RoiVolumeSummary = {
+  status: string;
+  message: string;
+  total_volume_mm3?: number | null;
+  total_volume_ml?: number | null;
+  total_lesion_voxels?: number | null;
+  slices_with_lesion?: number;
+  spacing_note?: string;
+  method?: string;
+  slice_volumes?: Array<{
+    index: number;
+    filename: string;
+    volume_mm3?: number;
+    volume_ml?: number;
+    mask_pixels?: number;
+  }>;
+};
+
+export type PciRegionAnatomyRow = {
+  index: number;
+  key: string;
+  label: string;
+  structures?: string;
+  boundaries?: string;
+  pci_score: number | null;
+  volume_mm3: number;
+  volume_ml: number;
+  slice_count: number;
+};
+
+export type PciRegionAnatomyReport = {
+  status: string;
+  message: string;
+  total_pci_score: number | null;
+  total_volume_ml?: number | null;
+  regions: PciRegionAnatomyRow[];
+  unassigned_volume_ml?: number;
+  anatomy_reference?: string;
+};
+
+export type LesionRoiItem = {
+  lesion_id: string;
+  slice_index: number;
+  filename: string;
+  region?: number | null;
+  volume_ml: number;
+  mask_pixels: number;
+};
+
+export type LesionRoiPack = {
+  status: string;
+  message: string;
+  lesion_count: number;
+  total_lesion_volume_ml?: number | null;
+  lesions: LesionRoiItem[];
+};
+
+export type ImagingGradePrediction = {
+  grade_label: string;
+  confidence: number | null;
+  source: string;
+  probabilities?: Record<string, number>;
+};
+
 export type PathologyImagingGradeResult = {
   status: string;
   message: string;
@@ -200,7 +264,50 @@ export type PathologyImagingGradeResult = {
   annotation_slice_count?: number;
   annotation_slices_with_mask?: number;
   pci?: PciScoreResult | null;
+  roi_volume?: RoiVolumeSummary | null;
+  pci_region_report?: PciRegionAnatomyReport | null;
+  lesion_rois?: LesionRoiPack | null;
+  imaging_grade?: ImagingGradePrediction | null;
 };
+
+export type ImagingCohortStatus = {
+  cohort_root: string;
+  high_grade_zips: number;
+  low_grade_zips: number;
+  features_extracted: number;
+  model_exists: boolean;
+  instructions: string;
+  last_training?: Record<string, unknown>;
+};
+
+export async function platformImagingCohortStatus() {
+  const { data } = await api.get<ImagingCohortStatus>("/api/v1/platform/pathology/cohort/status");
+  return data;
+}
+
+export async function platformImagingCohortExtract(limit = 0, skipExisting = true) {
+  const { data } = await api.post<Record<string, unknown>>(
+    "/api/v1/platform/pathology/cohort/extract-features",
+    null,
+    { params: { limit, skip_existing: skipExisting }, timeout: PATHOLOGY_GRADE_TIMEOUT_MS * 40 },
+  );
+  return data;
+}
+
+export async function platformImagingCohortTrain(minSamples = 6) {
+  const { data } = await api.post<Record<string, unknown>>("/api/v1/platform/pathology/cohort/train-imaging", null, {
+    params: { min_samples: minSamples },
+    timeout: 120000,
+  });
+  return data;
+}
+
+export async function platformImagingCohortValidate(testFraction = 0.3) {
+  const { data } = await api.get<Record<string, unknown>>("/api/v1/platform/pathology/cohort/validate", {
+    params: { test_fraction: testFraction },
+  });
+  return data;
+}
 
 export type AnnotationDatasetSummary = {
   dataset_id: string;

@@ -90,6 +90,10 @@ class Settings(BaseModel):
         default_factory=lambda: _e("DEEPSEEK_CHAT_MODEL", "deepseek-chat")
     )
     petct_model_path: str = Field(default_factory=lambda: _e("PETCT_MODEL_PATH", "models/petct_seg_model.pth"))
+    ct_seg_model_path: str = Field(
+        default_factory=lambda: _e("CT_SEG_MODEL_PATH", "models/ct_lesion_unet2d.pth")
+    )
+    ct_seg_use_local: bool = Field(default_factory=lambda: _e_bool("CT_SEG_USE_LOCAL", False))
     demo_mode: bool = Field(default_factory=lambda: _e_bool("DEMO_MODE", False))
     # PubMed E-utilities identification (NCBI recommends tool + email)
     pubmed_email: str = Field(default_factory=lambda: _e("PUBMED_EMAIL", "research@localhost"))

@@ -1,21 +1,32 @@
 import type { PciRegionScore, PciScoreResult } from "../api/platform";
 
-/** 与 genpci / 参考平台一致的 13 区 PCI 定义（按 index 0–12） */
-export const PCI_REGION_DEFS: ReadonlyArray<{ index: number; key: string; label: string }> = [
-  { index: 0, key: "pci0Central", label: "0_中央区域" },
-  { index: 1, key: "pci1RightUpper", label: "1_右上区域" },
-  { index: 2, key: "pci2Epigastrium", label: "2_上腹部区域" },
-  { index: 3, key: "pci3LeftUpper", label: "3_左上区域" },
-  { index: 4, key: "pci4LeftFlank", label: "4_左侧腹部区域" },
-  { index: 5, key: "pci5LeftLower", label: "5_左下区域" },
-  { index: 6, key: "pci6Pelvis", label: "6_盆腔区域" },
-  { index: 7, key: "pci7RightLower", label: "7_右下区域" },
-  { index: 8, key: "pci8RightFlank", label: "8_右侧腹部区域" },
-  { index: 9, key: "pci9UpperJejunum", label: "9_空肠上部区域" },
-  { index: 10, key: "pci10LowerJejunum", label: "10_空肠下部区域" },
-  { index: 11, key: "pci11UpperIleum", label: "11_回肠上部区域" },
-  { index: 12, key: "pci12LowerIleum", label: "12_回肠下部区域" },
+/** 影像 rPCI 13 区 — Tops-Welten et al., European Radiology 2025 (Delphi, Table 1) */
+export const RPCI_CITATION =
+  "Tops-Welten M et al. Eur Radiol 2025;35:7856–7866 · doi:10.1007/s00330-025-11762-3";
+
+export const PCI_REGION_DEFS: ReadonlyArray<{
+  index: number;
+  key: string;
+  label: string;
+  structures?: string;
+}> = [
+  { index: 0, key: "pci0Central", label: "0_横结肠与大网膜", structures: "Transverse colon; greater omentum" },
+  { index: 1, key: "pci1RightUpper", label: "1_右肝叶与胆囊", structures: "Right liver; gallbladder; retrohepatic space" },
+  { index: 2, key: "pci2Epigastrium", label: "2_左肝与胰头体", structures: "Left liver; pancreatic head/body; lesser omentum" },
+  { index: 3, key: "pci3LeftUpper", label: "3_脾与胃胰尾", structures: "Spleen; stomach; pancreatic tail" },
+  { index: 4, key: "pci4LeftFlank", label: "4_降结肠上段", structures: "Cranial descending colon" },
+  { index: 5, key: "pci5LeftLower", label: "5_降结肠下段", structures: "Caudal descending colon" },
+  { index: 6, key: "pci6Pelvis", label: "6_直肠乙状结肠与盆腔", structures: "Rectosigmoid; bladder; Douglas pouch" },
+  { index: 7, key: "pci7RightLower", label: "7_升结肠下段", structures: "Caudal ascending colon (from Bauhin)" },
+  { index: 8, key: "pci8RightFlank", label: "8_升结肠上段", structures: "Cranial ascending colon" },
+  { index: 9, key: "pci9UpperJejunum", label: "9_小肠 rPCI Ⅰ", structures: "Small bowel seg. 1/4 (Treitz AP planes)" },
+  { index: 10, key: "pci10LowerJejunum", label: "10_小肠 rPCI Ⅱ", structures: "Small bowel seg. 2/4" },
+  { index: 11, key: "pci11UpperIleum", label: "11_小肠 rPCI Ⅲ", structures: "Small bowel seg. 3/4" },
+  { index: 12, key: "pci12LowerIleum", label: "12_小肠 rPCI Ⅳ", structures: "Small bowel seg. 4/4" },
 ];
+
+/** rPCI 理论满分 39（13×3）；若 CT/genpci 仍报 36 则沿用接口返回值 */
+export const RPCI_MAX_SCORE = 39;
 
 /** 历史 / 旧版 genpci 字段别名 → 区 index */
 const LEGACY_KEY_TO_INDEX: Record<string, number> = {

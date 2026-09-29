@@ -3,7 +3,11 @@ import { App, Alert, Button, Col, Collapse, Empty, Progress, Row, Space, Spin, T
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { platformSavePathologyAnalysis, platformDownloadAnnotationDataset } from "../../api/platform";
-import type { PathologyImagingGradeResult, PciScoreResult } from "../../api/platform";
+import type {
+  PathologyImagingGradeResult,
+  PciRegionAnatomyReport,
+  PciScoreResult,
+} from "../../api/platform";
 import { saveCase } from "../../api/client";
 import { CarePathwayPanel } from "../../components/platform/CarePathwayPanel";
 import { LlmProviderSelect } from "../../components/platform/LlmProviderSelect";
@@ -45,7 +49,16 @@ import {
   saveCarePathwayResult,
 } from "../../lib/platformSession";
 import { hasAnnotatedImage } from "../../lib/pathologyImage";
-import { buildPciConclusion, normalizePciRegions, pciHasRenderableScores, pciRegionScoreTone, resolvePciFromResult, sumPciRegions } from "../../lib/pciRegions";
+import {
+  buildPciConclusion,
+  normalizePciRegions,
+  pciHasRenderableScores,
+  pciRegionScoreTone,
+  resolvePciFromResult,
+  RPCI_CITATION,
+  RPCI_MAX_SCORE,
+  sumPciRegions,
+} from "../../lib/pciRegions";
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -110,6 +123,9 @@ function AnalysisResultsSidebar({
   const findings = buildDetectionFindings(pci);
   const totalScore = pci?.pci_score ?? (pci ? sumPciRegions(normalizePciRegions(pci)) : null);
   const conclusion = pci ? buildPciConclusion(pci) : "";
+  const roiVol = result.roi_volume ?? (result.raw?.roi_volume as typeof result.roi_volume | undefined);
+  const imagingGrade = result.imaging_grade ?? (result.raw?.imaging_grade as typeof result.imaging_grade | undefined);
+
   const positivePct =
     pci?.positive_rate != null
       ? pci.positive_rate > 1
@@ -148,6 +164,24 @@ function AnalysisResultsSidebar({
         )}
       </div>
 
+      {roiVol?.total_volume_ml != null && (roiVol.slices_with_lesion ?? 0) > 0 ? (
+        <div className="pmp-analysis-sidebar-block">
+          <div className="pmp-panel-title">ROI 体积</div>
+          <div className="pmp-score-metric-value" style={{ fontSize: 22, marginBottom: 4 }}>
+            {roiVol.total_volume_ml.toFixed(2)} ml
+          </div>
+          <Text type="secondary" style={{ fontSize: 12, display: "block" }}>
+            {roiVol.total_volume_mm3 != null ? `${roiVol.total_volume_mm3.toFixed(1)} mm³ · ` : ""}
+            {roiVol.slices_with_lesion} 层含病灶
+          </Text>
+          {roiVol.spacing_note ? (
+            <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 4 }}>
+              {roiVol.spacing_note}
+            </Text>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="pmp-analysis-sidebar-block">
         <div className="pmp-panel-title">整体评分</div>
         <div className="pmp-score-metrics">
@@ -160,7 +194,21 @@ function AnalysisResultsSidebar({
               <Progress percent={Math.round(positivePct)} size="small" strokeColor="#1677ff" />
             ) : null}
           </div>
-          {result.confidence != null ? (
+          {imagingGrade?.grade_label ? (
+            <div className="pmp-score-metric">
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                病理分级（影像模型）
+              </Text>
+              <div className="pmp-score-metric-value">
+                <Tag color={imagingGrade.grade_label === "高级别" ? "red" : "green"}>{imagingGrade.grade_label}</Tag>
+              </div>
+              {imagingGrade.confidence != null ? (
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  置信度 {(imagingGrade.confidence * 100).toFixed(0)}%
+                </Text>
+              ) : null}
+            </div>
+          ) : result.confidence != null ? (
             <div className="pmp-score-metric">
               <Text type="secondary" style={{ fontSize: 12 }}>
                 模型置信度
@@ -225,7 +273,74 @@ function PciSliceScoresTable({ slices }: { slices: NonNullable<PciScoreResult["s
   );
 }
 
-function PciScorePanel({ pci, compact = false }: { pci: PciScoreResult; compact?: boolean }) {
+function PciRegionAnatomyTable({ report }: { report: PciRegionAnatomyReport }) {
+  const data = report.regions ?? [];
+  return (
+    <div className="pmp-pci-report-section" style={{ marginTop: 20 }}>
+      <div className="pmp-pci-report-title">13 区 rPCI + 病灶体积（影像解剖）</div>
+      <Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 8 }}>
+        {report.anatomy_reference || RPCI_CITATION}
+      </Text>
+      <Table
+        size="small"
+        pagination={false}
+        rowKey="key"
+        dataSource={data}
+        columns={[
+          { title: "分区", dataIndex: "label", width: 160 },
+          {
+            title: "PCI",
+            dataIndex: "pci_score",
+            width: 64,
+            render: (v: number | null) => (
+              <span className={`pmp-pci-region-score pmp-pci-region-score--${pciRegionScoreTone(v)}`}>{v ?? "—"}</span>
+            ),
+          },
+          {
+            title: "体积 (ml)",
+            dataIndex: "volume_ml",
+            width: 96,
+            render: (v: number) => (v > 0 ? v.toFixed(3) : "—"),
+          },
+          { title: "含病灶层数", dataIndex: "slice_count", width: 96 },
+        ]}
+        summary={() =>
+          report.total_pci_score != null || report.total_volume_ml != null ? (
+            <Table.Summary.Row>
+              <Table.Summary.Cell index={0}>
+                <Text strong>合计</Text>
+              </Table.Summary.Cell>
+              <Table.Summary.Cell index={1}>
+                <Text strong>
+                  {report.total_pci_score ?? "—"}/{RPCI_MAX_SCORE}
+                </Text>
+              </Table.Summary.Cell>
+              <Table.Summary.Cell index={2}>
+                <Text strong>{report.total_volume_ml != null ? `${report.total_volume_ml.toFixed(2)} ml` : "—"}</Text>
+              </Table.Summary.Cell>
+              <Table.Summary.Cell index={3} />
+            </Table.Summary.Row>
+          ) : null
+        }
+      />
+      {(report.unassigned_volume_ml ?? 0) > 0 ? (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          未映射分区体积：{report.unassigned_volume_ml!.toFixed(3)} ml（CT 未返回 e/region 的层面）
+        </Text>
+      ) : null}
+    </div>
+  );
+}
+
+function PciScorePanel({
+  pci,
+  compact = false,
+  regionReport,
+}: {
+  pci: PciScoreResult;
+  compact?: boolean;
+  regionReport?: PciRegionAnatomyReport | null;
+}) {
   const fromCtSlices = pci.raw?.source === "ct_slices" || (pci.slice_scores?.length ?? 0) > 0;
   const hasScores = pciHasRenderableScores(pci);
   if (pci.status === "skipped") {
@@ -298,7 +413,7 @@ function PciScorePanel({ pci, compact = false }: { pci: PciScoreResult; compact?
       </div>
 
       <div className="pmp-pci-report-section">
-        <div className="pmp-pci-report-title">13 区 PCI 评分</div>
+        <div className="pmp-pci-report-title">13 区 rPCI 评分（影像解剖）</div>
         <div className={`pmp-pci-regions${compact ? " pmp-pci-regions--compact" : ""}`}>
           {regions.map((r) => (
             <div key={r.key} className="pmp-pci-region-card">
@@ -312,6 +427,8 @@ function PciScorePanel({ pci, compact = false }: { pci: PciScoreResult; compact?
       </div>
 
       {pci.slice_scores?.length ? <PciSliceScoresTable slices={pci.slice_scores} /> : null}
+
+      {regionReport?.regions?.length ? <PciRegionAnatomyTable report={regionReport} /> : null}
 
       {conclusion ? (
         <div className="pmp-pci-conclusion">
@@ -488,7 +605,7 @@ function PathologyResultPanel({
               key: "pci",
               label: "PCI 评分",
               children: pci ? (
-                <PciScorePanel pci={pci} />
+                <PciScorePanel pci={pci} regionReport={result.pci_region_report} />
               ) : (
                 <Alert type="info" showIcon message="PCI 报告未返回" description="请确认 CT 接口响应含 pci 对象" />
               ),
@@ -500,6 +617,28 @@ function PathologyResultPanel({
                 <PciSliceScoresTable slices={pci.slice_scores} />
               ) : (
                 <Empty description="暂无逐层 sc 数据" />
+              ),
+            },
+            {
+              key: "lesions",
+              label: "病灶 ROI",
+              children: result.lesion_rois?.lesions?.length ? (
+                <Table
+                  size="small"
+                  rowKey="lesion_id"
+                  dataSource={result.lesion_rois.lesions}
+                  pagination={{ pageSize: 15 }}
+                  columns={[
+                    { title: "ID", dataIndex: "lesion_id", width: 72 },
+                    { title: "层", dataIndex: "slice_index", width: 48 },
+                    { title: "分区 e", dataIndex: "region", width: 64, render: (v: number | null) => v ?? "—" },
+                    { title: "体积 (ml)", dataIndex: "volume_ml", render: (v: number) => v.toFixed(4) },
+                    { title: "像素", dataIndex: "mask_pixels" },
+                    { title: "文件", dataIndex: "filename", ellipsis: true },
+                  ]}
+                />
+              ) : (
+                <Empty description="未检测到连通域病灶 ROI" />
               ),
             },
           ]}
